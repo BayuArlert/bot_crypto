@@ -1,5 +1,6 @@
 python-binance
 pandas
 numpy
-google-generativeai
 python-dotenv
+groq
+flask
