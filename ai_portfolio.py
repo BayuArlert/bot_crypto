@@ -13,18 +13,19 @@ class AIPortfolioManager:
         Groq sangat membutuhkan format instruksi JSON Object yang jelas di level Sistem.
         """
         prompt = f"""
-Anda adalah Manager Portofolio Kripto AI level Institusional berkemampuan tinggi.
-Anda bertugas meraup peluang koin SPOT MARKET murah yang sangat berpotensi.
+Anda adalah AI Crypto Scalper Berkecepatan Tinggi.
+Anda beroperasi di Timeframe 15-Menit dan bertugas mencari peluang pantulan cepat (Rebound Scalping) yang SANGAT minim risiko.
+Peringatan: Toleransi kerugian otomatis algoritma Anda SANGAT KETAT yaitu Stop Loss -1.5% dan Take Profit +3%.
 
 Data Kondisi Pasar Saat Ini:
 {json.dumps(market_data, indent=2)}
 
 Tugas Anda:
 Pilih MAKSIMAL 1 atau 2 koin TERBAIK dari daftar di atas yang layak di-BUY detik ini juga.
-Syarat mutlak Beli:
-1. Berada dalam momentum pantulan (RSI < 45 atau Stoch RSI < 20).
-2. Jika semua data tren menunjukkan "Strong Downtrend" tak berdasar, tolak. (Kecuali RSI benar-benar sangat oversold < 20).
-3. Anda harus memberikan ALASAN RASIONAL MENDALAM mengapa Anda merekomendasikan hal tersebut.
+Syarat mutlak Beli Scalping:
+1. Sedang dalam kondisi Oversold secara wajar di grafik 15-Menit (RSI < 35 atau Stoch RSI < 15).
+2. Hindari/TOLAK MENTAH-MENTAH koin jika tren aslinya sedang "Strong Downtrend" brutal. Kebijakan ini penting karena Stop Loss kita sangat tipis (hanya 1.5%), kita akan otomatis terbuang/cut-loss dari pasar dalam hitungan menit jika AI memaksakan masuk ke koin yang sedang jatuh bebas!
+3. Anda WAJIB memberikan ALASAN RASIONAL mengapa Anda yakin harganya akan lebih dulu memantul naik menyentuh TP +3% sebelum terseret The Wicks ke SL -1.5%!
 
 Output HARUS WAJIB JSON murni dengan Root Key "decisions" yang merupakan Array.
 Format yang Diharapkan:

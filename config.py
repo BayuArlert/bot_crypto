@@ -25,8 +25,8 @@ SYMBOL_LIST = [
     'ADAUSDT'   # Cardano
 ]
 
-# Timeframe yang ditangkap untuk analisa (1 jam-an sangat ideal untuk AI)
-TIMEFRAME = "1h"
+# Timeframe yang ditangkap (15m sangat pas untuk napas Scalping cepat)
+TIMEFRAME = "15m"
 
 # ============================================================
 # 3. RISIKO & MODAL (Mazhab A: Cut Loss Ketat)
