@@ -9,7 +9,7 @@ from flask import Flask, Response, render_template_string
 # ──────────────────────────────────────────────────────────────
 _state = {
     'last_update': '-',
-    'virtual_balance': 1000.0,
+    'virtual_balance': 25.0,
     'total_profit': 0.0,
     
     # List of object {symbol, price, buy_price, pnl, tp, sl}
@@ -154,7 +154,7 @@ HTML_TEMPLATE = r"""
         <!-- Balance Panel -->
         <div class="card">
             <div class="card-title">Dompet Virtual Anda</div>
-            <div class="balance-big" id="virtual-balance">$1000.00</div>
+            <div class="balance-big" id="virtual-balance">$25.00</div>
             <div style="font-size: 12px; margin-top: 5px; color:var(--muted)">PnL Total: <span id="total-pnl">$0.00</span></div>
         </div>
         
@@ -179,10 +179,12 @@ HTML_TEMPLATE = r"""
                         <th>Trend (EMA)</th>
                         <th>RSI</th>
                         <th>ADX</th>
+                        <th>VOL</th>
+                        <th>BB%</th>
                     </tr>
                 </thead>
                 <tbody id="market-html">
-                    <tr><td colspan="5" style="text-align:center; color:var(--muted)">Scaning...</td></tr>
+                    <tr><td colspan="7" style="text-align:center; color:var(--muted)">Scaning...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -219,6 +221,8 @@ HTML_TEMPLATE = r"""
                     <td style="color:${m.trend.includes('Up') ? 'var(--green)' : m.trend.includes('Down') ? 'var(--red)' : '#888'}">${m.trend}</td>
                     <td style="color:${m.rsi<35 ? 'var(--green)' : m.rsi>65 ? 'var(--red)' : '#888'}">${m.rsi}</td>
                     <td>${m.adx}</td>
+                    <td style="color:${(m.vol_ratio||1)>=1.5 ? 'var(--green)' : (m.vol_ratio||1)<0.8 ? 'var(--red)' : '#888'}">${(m.vol_ratio||1).toFixed(2)}x</td>
+                    <td style="color:${(m.bb_pct||50)<20 ? 'var(--green)' : (m.bb_pct||50)>80 ? 'var(--red)' : '#888'}">${(m.bb_pct||50).toFixed(1)}%</td>
                 </tr>
             `).join('');
         }

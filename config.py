@@ -22,7 +22,10 @@ SYMBOL_LIST = [
     'SOLUSDT',  # Solana
     'BNBUSDT',  # Binance Coin
     'XRPUSDT',  # Ripple
-    'ADAUSDT'   # Cardano
+    'ADAUSDT',  # Cardano
+    'AVAXUSDT', # Avalanche   - Volatilitas tinggi, sering bouncing tajam
+    'LINKUSDT', # Chainlink   - Favorit scalper, reversal cepat
+    'DOGEUSDT', # Dogecoin    - Volume Binance sangat besar, micro-bounce rutin
 ]
 
 # Timeframe yang ditangkap (15m sangat pas untuk napas Scalping cepat)
@@ -33,10 +36,12 @@ TIMEFRAME = "15m"
 # ============================================================
 # Bot hanya diizinkan membeli dengan modal statis per koin, 
 # Tujuannya agar saldo pecah/terbagi rata jika AI menyuruh beli semua koin di atas.
-BUDGET_PER_TRADE_USDT = 20.0  # Contoh: $20 per tembakan beli
+BUDGET_PER_TRADE_USDT = 10.0  # $10 per tembakan (AI max 2 posisi = $20, sisa $5 buffer)
+MAX_OPEN_POSITIONS    = 2     # Maksimal posisi aktif sekaligus (2×$10=$20 dari $25 modal)
+SL_COOLDOWN_LOOPS     = 3     # Loop cooldown pasca Cut Loss (3 loop × 60 detik = 3 menit jeda)
 
-STOP_LOSS_PCT   = 0.015 # -1.5% otomatis Cut loss (sangat ketat, cocok untuk day trader)
-TAKE_PROFIT_PCT = 0.03  # +3% otomatis Jual Untung (mudah tersentuh dalam hitungan jam)
+STOP_LOSS_PCT   = 0.01  # -1% otomatis Cut loss (ketat, cocok untuk scalping rutin)
+TAKE_PROFIT_PCT = 0.015 # +1.5% otomatis Jual Untung (realistis & rutin di timeframe 15m)
 
 # ============================================================
 # 4. BOT INTERVAL

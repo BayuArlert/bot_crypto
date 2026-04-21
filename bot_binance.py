@@ -13,7 +13,9 @@ class BinanceBot:
         self.client = Client(config.BINANCE_API_KEY, config.BINANCE_SECRET)
         self.ai = AIPortfolioManager(config.GROQ_API_KEY) # Terhubung ke Groq Llama-3 API
         self.virtual_portfolio = {}  # MENYIMPAN TRANSAKSI PALSU
-        self.virtual_balance = 1000.0 # MODAL MAINAN $1000
+        self.virtual_balance = 25.0  # Modal Simulasi $25 (sesuai rencana top up Binance)
+        self.sl_cooldown = {}         # {symbol: loop_count} — jeda re-beli pasca Cut Loss
+        self.loop_count  = 0          # Counter siklus loop berjalan
         
     def _get_precision(self, symbol):
         """Membaca presisi desimal koin dari server Binance agar tidak ditolak"""
@@ -26,7 +28,10 @@ class BinanceBot:
             return 2  # Default kasar jika error
         return int(round(-math.log(step_size, 10), 0))
         
-    def get_historical_data(self, symbol, interval="1h", limit=100) -> pd.DataFrame:
+    def get_historical_data(self, symbol, interval=None, limit=100) -> pd.DataFrame:
+        # [FIX] Default selalu ikut config.TIMEFRAME, bukan hardcoded "1h"
+        if interval is None:
+            interval = config.TIMEFRAME
         try:
             klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
             df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
@@ -45,19 +50,23 @@ class BinanceBot:
             pos = self.virtual_portfolio[symbol]
             if current_price >= pos['tp_price']:
                 profit = config.BUDGET_PER_TRADE_USDT * config.TAKE_PROFIT_PCT
-                self.virtual_balance += profit
-                msg = f"🎉 TAKE PROFIT TERSENTUH untuk {symbol}! Untung: +${profit:.2f}"
+                # Kembalikan modal + profit ke saldo
+                self.virtual_balance += config.BUDGET_PER_TRADE_USDT + profit
+                msg = f"🎉 TAKE PROFIT TERSENTUH untuk {symbol}! Untung: +${profit:.2f} | Saldo: ${self.virtual_balance:.2f}"
                 dashboard.add_log(msg)
                 print(msg)
                 del self.virtual_portfolio[symbol]
                 
             elif current_price <= pos['sl_price']:
                 loss = config.BUDGET_PER_TRADE_USDT * config.STOP_LOSS_PCT
-                self.virtual_balance -= loss
-                msg = f"💔 CUT LOSS TERSENTUH untuk {symbol}! Rugi: -${loss:.2f}"
+                # Kembalikan modal dikurangi loss ke saldo
+                self.virtual_balance += config.BUDGET_PER_TRADE_USDT - loss
+                msg = f"💔 CUT LOSS TERSENTUH untuk {symbol}! Rugi: -${loss:.2f} | Saldo: ${self.virtual_balance:.2f}"
                 dashboard.add_log(msg)
                 print(msg)
                 del self.virtual_portfolio[symbol]
+                # [BARU] Catat cooldown — bot tidak akan re-beli koin ini selama beberapa loop
+                self.sl_cooldown[symbol] = self.loop_count
 
 
     def has_open_orders(self, symbol):
@@ -70,8 +79,13 @@ class BinanceBot:
         Hanya numpang mencatat di buku catatan virtual bot.
         """
         if self.virtual_balance < config.BUDGET_PER_TRADE_USDT:
-            print("❌ TRANSAKSI SIMULASI BATAL: Modal Uang Mainan Anda Habis!")
+            msg = f"❌ TRANSAKSI SIMULASI BATAL: Saldo ${self.virtual_balance:.2f} tidak cukup untuk trade ${config.BUDGET_PER_TRADE_USDT}!"
+            dashboard.add_log(msg)
+            print(msg)
             return
+        
+        # Potong modal dari saldo saat beli (simulasi nyata)
+        self.virtual_balance -= config.BUDGET_PER_TRADE_USDT
 
         msg1 = f"📝 Simulasi AI mengeklik BELI {symbol} senilai ${config.BUDGET_PER_TRADE_USDT} di harga {current_price}"
         dashboard.add_log(msg1)
@@ -95,6 +109,7 @@ class BinanceBot:
         dashboard.add_log("Mesin Spot Crypto (Mode Paper Trading) Siap Meluncur!")
         
         while True:
+            self.loop_count += 1  # Increment counter tiap siklus untuk tracking cooldown
             market_state = {}
             radar_list = []
             
@@ -107,11 +122,13 @@ class BinanceBot:
                     
                     # Tambahkan ke radar dashboard UI
                     radar_list.append({
-                        'symbol': sym,
-                        'price': market_state[sym]['price'],
-                        'rsi': market_state[sym]['rsi'],
-                        'trend': market_state[sym]['trend_ema'],
-                        'adx': market_state[sym]['adx']
+                        'symbol':    sym,
+                        'price':     market_state[sym]['price'],
+                        'rsi':       market_state[sym]['rsi'],
+                        'trend':     market_state[sym]['trend_ema'],
+                        'adx':       market_state[sym]['adx'],
+                        'vol_ratio': market_state[sym].get('vol_ratio', 1.0),
+                        'bb_pct':    market_state[sym].get('bb_pct', 50),
                     })
                     
                     # Cek apakah TP/SL fiktif kita sudah tersentuh
@@ -137,7 +154,7 @@ class BinanceBot:
             # Lempar semburan ke Web
             dashboard.update_state(
                 virtual_balance=self.virtual_balance,
-                total_profit=self.virtual_balance - 1000.0,
+                total_profit=self.virtual_balance - 25.0,  # Baseline modal awal $25
                 market_radar=radar_list,
                 positions=active_pos_list
             )
@@ -148,7 +165,19 @@ class BinanceBot:
             # Hanya bangunkan AI jika koin tersebut BENAR-BENAR anjlok (Oversold Parah)
             koin_potensial = {}
             for koin, data in market_state.items():
-                if data['rsi'] < 33 or data['stoch_rsi'] < 10: 
+                # Filter 1: RSI < 35 atau StochRSI < 15 (oversold)
+                is_oversold = data['rsi'] < 35 or data['stoch_rsi'] < 15
+                # Filter 2: Tolak downtrend brutal (jatuh bebas = jebakan SL)
+                is_dangerous_downtrend = (
+                    data['trend_ema'] == "Strong Downtrend" and data['adx'] > 25
+                )
+                # [BARU] Filter 3: Volume minimal 80% dari rata-rata (hindari dead market)
+                has_volume = data.get('vol_ratio', 1.0) >= 0.8
+                # [BARU] Filter 4: Cooldown — jangan re-beli koin yang baru kena Cut Loss
+                loops_since_sl = self.loop_count - self.sl_cooldown.get(koin, -999)
+                is_on_cooldown = loops_since_sl < config.SL_COOLDOWN_LOOPS
+
+                if is_oversold and not is_dangerous_downtrend and has_volume and not is_on_cooldown:
                     koin_potensial[koin] = data
 
             if not koin_potensial:
@@ -170,7 +199,12 @@ class BinanceBot:
                         dashboard.add_log(res_msg)
                         print(res_msg)
                         
-                        if self.has_open_orders(sym):
+                        if len(self.virtual_portfolio) >= config.MAX_OPEN_POSITIONS:
+                            skip_msg = f"⏭️ SKIP: Sudah ada {config.MAX_OPEN_POSITIONS} posisi aktif. Tunggu TP/SL dulu sebelum buka posisi baru."
+                            dashboard.add_log(skip_msg)
+                            print(skip_msg)
+                            break  # Hentikan loop koin, tidak perlu cek selanjutnya
+                        elif self.has_open_orders(sym):
                             dashboard.add_log(f"⏭️ SKIP PEMBELIAN: Dompet Binance Anda masih memegang {sym}.")
                         else:
                             current_price = market_state[sym]['price']
