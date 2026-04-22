@@ -39,6 +39,9 @@ TIMEFRAME = "15m"
 BUDGET_PER_TRADE_USDT = 10.0  # $10 per tembakan (AI max 2 posisi = $20, sisa $5 buffer)
 MAX_OPEN_POSITIONS    = 2     # Maksimal posisi aktif sekaligus (2×$10=$20 dari $25 modal)
 SL_COOLDOWN_LOOPS     = 3     # Loop cooldown pasca Cut Loss (3 loop × 60 detik = 3 menit jeda)
+BB_PCT_THRESHOLD      = 35    # Harga harus di bawah 35% BB (dekat lower band = zona bounce)
+AI_MIN_CONFIDENCE     = 7     # Minimum skor keyakinan AI (1-10) untuk eksekusi entry
+MTF_INTERVAL          = "1h"  # Timeframe lebih besar untuk konfirmasi arah trend
 
 STOP_LOSS_PCT   = 0.01  # -1% otomatis Cut loss (ketat, cocok untuk scalping rutin)
 TAKE_PROFIT_PCT = 0.015 # +1.5% otomatis Jual Untung (realistis & rutin di timeframe 15m)

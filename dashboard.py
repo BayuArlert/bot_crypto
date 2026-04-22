@@ -11,6 +11,9 @@ _state = {
     'last_update': '-',
     'virtual_balance': 25.0,
     'total_profit': 0.0,
+    'tp_count': 0,
+    'sl_count': 0,
+    'trade_history': [],
     
     # List of object {symbol, price, buy_price, pnl, tp, sl}
     'positions': [],
@@ -156,6 +159,11 @@ HTML_TEMPLATE = r"""
             <div class="card-title">Dompet Virtual Anda</div>
             <div class="balance-big" id="virtual-balance">$25.00</div>
             <div style="font-size: 12px; margin-top: 5px; color:var(--muted)">PnL Total: <span id="total-pnl">$0.00</span></div>
+            <div style="font-size: 12px; margin-top: 8px; display:flex; gap:12px;">
+                <span style="color:var(--green)">TP: <strong id="tp-count">0</strong></span>
+                <span style="color:var(--red)">SL: <strong id="sl-count">0</strong></span>
+                <span style="color:var(--muted)">WR: <strong id="win-rate">-%</strong></span>
+            </div>
         </div>
         
         <!-- Positions Panel -->
@@ -195,6 +203,30 @@ HTML_TEMPLATE = r"""
             <div class="log-box" id="log-html">
                 <div class="log-entry">Menunggu sistem menyala...</div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Histori Trade Full Width -->
+<div style="padding: 0 32px 32px; max-width: 1400px; margin: 0 auto;">
+    <div class="card">
+        <div class="card-title">📊 Histori Trade Sesi Ini</div>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Waktu</th>
+                        <th>Symbol</th>
+                        <th>Tipe</th>
+                        <th>Harga Beli</th>
+                        <th>Harga Keluar</th>
+                        <th>PnL</th>
+                    </tr>
+                </thead>
+                <tbody id="history-html">
+                    <tr><td colspan="6" style="text-align:center; color:var(--muted); font-size:12px; padding:20px">Belum ada trade di sesi ini...</td></tr>
+                </tbody>
+            </table>
         </div>
     </div>
 </div>
@@ -249,6 +281,26 @@ HTML_TEMPLATE = r"""
         // Update Logs
         if (s.logs && s.logs.length > 0) {
             document.getElementById('log-html').innerHTML = s.logs.map(l => `<div class="log-entry">${l}</div>`).join('');
+        }
+
+        // Update Win Rate Stats
+        const total = (s.tp_count || 0) + (s.sl_count || 0);
+        document.getElementById('tp-count').innerText = s.tp_count || 0;
+        document.getElementById('sl-count').innerText = s.sl_count || 0;
+        document.getElementById('win-rate').innerText = total > 0 ? Math.round((s.tp_count/total)*100) + '%' : '-%';
+
+        // Update Trade History
+        if (s.trade_history && s.trade_history.length > 0) {
+            document.getElementById('history-html').innerHTML = s.trade_history.map(t => `
+                <tr>
+                    <td style="font-size:12px; color:var(--muted)">${t.time}</td>
+                    <td>${t.symbol}</td>
+                    <td style="color:${t.type==='TP'?'var(--green)':'var(--red)'}; font-weight:800">${t.type==='TP'?'🎉 TP':'💔 SL'}</td>
+                    <td>$${t.buy_price.toFixed(4)}</td>
+                    <td>$${t.exit_price.toFixed(4)}</td>
+                    <td class="${t.pnl>=0?'green':'red'}">${t.pnl>=0?'+':''}$${Math.abs(t.pnl).toFixed(2)}</td>
+                </tr>
+            `).join('');
         }
     };
 </script>
