@@ -125,25 +125,55 @@ table tbody tr:hover{background:rgba(255,255,255,.02)}
 /* FOOTER */
 footer{text-align:center;padding:16px;font-size:10px;color:var(--muted);border-top:1px solid var(--border)}
 
-/* MOBILE < 600px: sembunyikan kolom sekunder agar tabel muat di layar */
-@media(max-width:599px){
-  /* Radar — sembunyikan Vol(6) dan BB%(7) */
-  #tbl-radar thead th:nth-child(6),
-  #tbl-radar thead th:nth-child(7),
-  #tbl-radar tbody td:nth-child(6),
-  #tbl-radar tbody td:nth-child(7){ display:none }
+/* RESPONSIVE TABLE TO CARDS (ALL MOBILE RATIOS) */
+@media(max-width:850px){
+  .stats{gap:10px}
+  .wrap{padding:10px 10px 24px}
+  .stat-val{font-size:20px}
+  
+  /* Sembunyikan thead */
+  .tbl-wrap thead{display:none}
+  
+  /* Reset tabel menjadi blok agar full width tanpa scroll */
+  .tbl-wrap table, .tbl-wrap tbody, .tbl-wrap tr, .tbl-wrap td{display:block;width:100%}
+  #tbl-radar, #tbl-hist{min-width:100%}
+  .tbl-wrap{overflow-x:hidden}
+  
+  /* Row menjadi Card */
+  .tbl-wrap tr{
+    background:rgba(255,255,255,.02);
+    border:1px solid var(--border);
+    border-radius:10px;
+    margin-bottom:12px;
+    padding:8px 12px;
+  }
+  
+  /* Styling Cell */
+  .tbl-wrap td{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:8px 0;
+    border-bottom:1px solid rgba(255,255,255,.04);
+    text-align:right;
+    white-space:normal;
+  }
+  .tbl-wrap td:last-child{border-bottom:none}
+  
+  /* Label Kolom dari attribute data-label */
+  .tbl-wrap td::before{
+    content:attr(data-label);
+    color:var(--muted);
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:.5px;
+    font-family:'Inter',sans-serif;
+    font-weight:600;
+  }
+}
 
-  /* History — sembunyikan Strategi(4) dan Exit(6) */
-  #tbl-hist thead th:nth-child(4),
-  #tbl-hist thead th:nth-child(6),
-  #tbl-hist tbody td:nth-child(4),
-  #tbl-hist tbody td:nth-child(6){ display:none }
-
-  table th{ padding:6px 4px; font-size:9px; letter-spacing:0 }
-  table td{ padding:7px 4px; font-size:10.5px }
-  .wrap{ padding:8px 8px 20px }
-  .stats{ gap:8px }
-  .stat-val{ font-size:20px }
+@media(max-width:480px){
+  .stats{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -340,13 +370,13 @@ sse.onmessage = e => {
       const price = m.price;
       const pStr = price < 1 ? price.toFixed(4) : price < 100 ? price.toFixed(2) : price.toFixed(1);
       return `<tr>
-        <td style="font-weight:700;color:var(--text)">${m.symbol.replace('USDT','')}<small style="color:var(--muted)">/USDT</small></td>
-        <td>$${pStr}</td>
-        <td class="${tCls}">${tLbl}</td>
-        <td style="color:${rC}">${rsi}</td>
-        <td style="color:${aC}">${adx}</td>
-        <td style="color:${vC}">${vr.toFixed(2)}x</td>
-        <td style="color:${bC}">${bb.toFixed(1)}%</td>
+        <td data-label="Koin" style="font-weight:700;color:var(--text)">${m.symbol.replace('USDT','')}<small style="color:var(--muted)">/USDT</small></td>
+        <td data-label="Harga">$${pStr}</td>
+        <td data-label="Trend" class="${tCls}">${tLbl}</td>
+        <td data-label="RSI" style="color:${rC}">${rsi}</td>
+        <td data-label="ADX" style="color:${aC}">${adx}</td>
+        <td data-label="Vol" style="color:${vC}">${vr.toFixed(2)}x</td>
+        <td data-label="BB%" style="color:${bC}">${bb.toFixed(1)}%</td>
       </tr>`;
     }).join('');
   }
@@ -356,13 +386,13 @@ sse.onmessage = e => {
   if(hist.length > 0) {
     document.getElementById('hist-tbody').innerHTML = hist.map(t =>
       `<tr>
-        <td style="color:var(--sub);font-size:10px">${t.time}</td>
-        <td style="font-weight:700">${t.symbol.replace('USDT','')}</td>
-        <td><span class="bdg ${t.type==='TP'?'bdg-g':'bdg-r'}">${t.type}</span></td>
-        <td><span class="bdg bdg-b" style="font-size:9px">${t.strategy||'-'}</span></td>
-        <td>$${t.buy_price.toFixed(4)}</td>
-        <td>$${t.exit_price.toFixed(4)}</td>
-        <td style="color:${t.pnl>=0?'var(--green)':'var(--red)'};font-weight:700">${t.pnl>=0?'+':''}$${Math.abs(t.pnl).toFixed(2)}</td>
+        <td data-label="Waktu" style="color:var(--sub);font-size:10px">${t.time}</td>
+        <td data-label="Koin" style="font-weight:700">${t.symbol.replace('USDT','')}</td>
+        <td data-label="Hasil"><span class="bdg ${t.type==='TP'?'bdg-g':'bdg-r'}">${t.type}</span></td>
+        <td data-label="Strategi"><span class="bdg bdg-b" style="font-size:9px">${t.strategy||'-'}</span></td>
+        <td data-label="Entry">$${t.buy_price.toFixed(4)}</td>
+        <td data-label="Exit">$${t.exit_price.toFixed(4)}</td>
+        <td data-label="PnL" style="color:${t.pnl>=0?'var(--green)':'var(--red)'};font-weight:700">${t.pnl>=0?'+':''}$${Math.abs(t.pnl).toFixed(2)}</td>
       </tr>`
     ).join('');
   }
