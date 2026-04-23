@@ -4,143 +4,249 @@ import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 import config
-from indicators import hitung_indikator, get_market_summary
+from indicators import hitung_indikator, get_market_summary, detect_market_regime
 from ai_portfolio import AIPortfolioManager
 import math
 import dashboard
 
+
 class BinanceBot:
     def __init__(self):
-        self.client = Client(config.BINANCE_API_KEY, config.BINANCE_SECRET)
-        self.ai = AIPortfolioManager(config.GROQ_API_KEY) # Terhubung ke Groq Llama-3 API
-        self.virtual_portfolio = {}  # MENYIMPAN TRANSAKSI PALSU
-        self.virtual_balance = 25.0  # Modal Simulasi $25 (sesuai rencana top up Binance)
-        self.sl_cooldown   = {}   # {symbol: loop_count} — jeda re-beli pasca Cut Loss
-        self.loop_count    = 0    # Counter siklus loop berjalan
-        self.trade_history = []   # Histori semua TP/SL di sesi ini (maks 100 entri)
-        
+        self.client    = Client(config.BINANCE_API_KEY, config.BINANCE_SECRET)
+        self.ai        = AIPortfolioManager(config.GROQ_API_KEY)
+        self.virtual_portfolio = {}
+        self.virtual_balance   = 25.0
+        self.sl_cooldown       = {}
+        self.loop_count        = 0
+        self.trade_history     = []
+
     def _get_precision(self, symbol):
-        """Membaca presisi desimal koin dari server Binance agar tidak ditolak"""
-        info = self.client.get_symbol_info(symbol)
+        """Membaca presisi desimal koin dari Binance agar tidak ditolak"""
+        info      = self.client.get_symbol_info(symbol)
         step_size = None
         for f in info['filters']:
             if f['filterType'] == 'LOT_SIZE':
                 step_size = float(f['stepSize'])
         if step_size is None:
-            return 2  # Default kasar jika error
+            return 2
         return int(round(-math.log(step_size, 10), 0))
-        
+
     def get_historical_data(self, symbol, interval=None, limit=100) -> pd.DataFrame:
-        # [FIX] Default selalu ikut config.TIMEFRAME, bukan hardcoded "1h"
         if interval is None:
             interval = config.TIMEFRAME
         try:
             klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-            df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
-            df['close'] = pd.to_numeric(df['close'])
-            df['high'] = pd.to_numeric(df['high'])
-            df['low'] = pd.to_numeric(df['low'])
-            df['open'] = pd.to_numeric(df['open'])
+            df = pd.DataFrame(klines, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'qav', 'num_trades',
+                'taker_base_vol', 'taker_quote_vol', 'ignore'
+            ])
+            for col in ['close', 'high', 'low', 'open']:
+                df[col] = pd.to_numeric(df[col])
             return df
         except Exception as e:
             print(f"⚠️ Gagal menarik candle Binance untuk {symbol}: {e}")
             return pd.DataFrame()
 
-    def check_virtual_portfolio(self, symbol, current_price):
-        """Mengecek apakah koin palsu yang kita pegang sudah menyentuh target SL/TP"""
-        if symbol in self.virtual_portfolio:
-            pos = self.virtual_portfolio[symbol]
-            if current_price >= pos['tp_price']:
-                profit = config.BUDGET_PER_TRADE_USDT * config.TAKE_PROFIT_PCT
-                # Kembalikan modal + profit ke saldo
-                self.virtual_balance += config.BUDGET_PER_TRADE_USDT + profit
-                msg = f"🎉 TAKE PROFIT TERSENTUH untuk {symbol}! Untung: +${profit:.2f} | Saldo: ${self.virtual_balance:.2f}"
-                dashboard.add_log(msg)
-                print(msg)
-                # Catat ke histori trade
-                self.trade_history.insert(0, {
-                    'type': 'TP', 'symbol': symbol,
-                    'buy_price': pos['buy_price'], 'exit_price': current_price,
-                    'pnl': round(profit, 2),
-                    'time': datetime.now().strftime('%d/%m %H:%M')
-                })
-                if len(self.trade_history) > 100:
-                    self.trade_history = self.trade_history[:100]
-                del self.virtual_portfolio[symbol]
-                
-            elif current_price <= pos['sl_price']:
-                loss = config.BUDGET_PER_TRADE_USDT * config.STOP_LOSS_PCT
-                # Kembalikan modal dikurangi loss ke saldo
-                self.virtual_balance += config.BUDGET_PER_TRADE_USDT - loss
-                msg = f"💔 CUT LOSS TERSENTUH untuk {symbol}! Rugi: -${loss:.2f} | Saldo: ${self.virtual_balance:.2f}"
-                dashboard.add_log(msg)
-                print(msg)
-                # Catat ke histori trade
-                self.trade_history.insert(0, {
-                    'type': 'SL', 'symbol': symbol,
-                    'buy_price': pos['buy_price'], 'exit_price': current_price,
-                    'pnl': round(-loss, 2),
-                    'time': datetime.now().strftime('%d/%m %H:%M')
-                })
-                if len(self.trade_history) > 100:
-                    self.trade_history = self.trade_history[:100]
-                del self.virtual_portfolio[symbol]
-                # [BARU] Catat cooldown — bot tidak akan re-beli koin ini selama beberapa loop
-                self.sl_cooldown[symbol] = self.loop_count
+    # ──────────────────────────────────────────────────────
+    # TP/SL DINAMIS BERBASIS ATR & REGIME
+    # ──────────────────────────────────────────────────────
+    def _calc_tp_sl(self, buy_price: float, atr: float, regime: str):
+        """
+        Hitung TP dan SL secara otomatis berdasarkan ATR dan kondisi pasar.
+        Ini menggantikan angka hardcode 1% dan 1.5% yang tidak adaptif.
+        """
+        if atr and atr > 0:
+            if regime == 'BULL':
+                tp_price = buy_price + config.BULL_TP_ATR_MULT * atr
+                sl_price = buy_price - config.BULL_SL_ATR_MULT * atr
+            else:  # RANGE
+                tp_price = buy_price + config.RANGE_TP_ATR_MULT * atr
+                sl_price = buy_price - config.RANGE_SL_ATR_MULT * atr
+        else:
+            # Fallback ke persentase jika ATR tidak tersedia
+            tp_price = buy_price * (1 + config.FALLBACK_TP_PCT)
+            sl_price = buy_price * (1 - config.FALLBACK_SL_PCT)
 
+        return tp_price, sl_price
+
+    # ──────────────────────────────────────────────────────
+    # CEK TP/SL VIRTUAL PORTFOLIO
+    # ──────────────────────────────────────────────────────
+    def check_virtual_portfolio(self, symbol, current_price):
+        """Mengecek apakah posisi virtual sudah menyentuh TP atau SL"""
+        if symbol not in self.virtual_portfolio:
+            return
+        pos = self.virtual_portfolio[symbol]
+
+        if current_price >= pos['tp_price']:
+            profit = pos['tp_price'] - pos['buy_price']
+            profit_usdt = (profit / pos['buy_price']) * config.BUDGET_PER_TRADE_USDT
+            self.virtual_balance += config.BUDGET_PER_TRADE_USDT + profit_usdt
+
+            msg = (f"🎉 TAKE PROFIT {symbol}! "
+                   f"Entry: {pos['buy_price']:.4f} → TP: {current_price:.4f} | "
+                   f"Untung: +${profit_usdt:.2f} | Saldo: ${self.virtual_balance:.2f}")
+            dashboard.add_log(msg)
+            print(msg)
+
+            self.trade_history.insert(0, {
+                'type':       'TP',
+                'symbol':     symbol,
+                'strategy':   pos.get('strategy', '-'),
+                'buy_price':  pos['buy_price'],
+                'exit_price': current_price,
+                'pnl':        round(profit_usdt, 2),
+                'time':       datetime.now().strftime('%d/%m %H:%M')
+            })
+            del self.virtual_portfolio[symbol]
+
+        elif current_price <= pos['sl_price']:
+            loss       = pos['buy_price'] - pos['sl_price']
+            loss_usdt  = (loss / pos['buy_price']) * config.BUDGET_PER_TRADE_USDT
+            self.virtual_balance += config.BUDGET_PER_TRADE_USDT - loss_usdt
+
+            msg = (f"💔 CUT LOSS {symbol}! "
+                   f"Entry: {pos['buy_price']:.4f} → SL: {current_price:.4f} | "
+                   f"Rugi: -${loss_usdt:.2f} | Saldo: ${self.virtual_balance:.2f}")
+            dashboard.add_log(msg)
+            print(msg)
+
+            self.trade_history.insert(0, {
+                'type':       'SL',
+                'symbol':     symbol,
+                'strategy':   pos.get('strategy', '-'),
+                'buy_price':  pos['buy_price'],
+                'exit_price': current_price,
+                'pnl':        round(-loss_usdt, 2),
+                'time':       datetime.now().strftime('%d/%m %H:%M')
+            })
+            del self.virtual_portfolio[symbol]
+            self.sl_cooldown[symbol] = self.loop_count
+
+        if len(self.trade_history) > 100:
+            self.trade_history = self.trade_history[:100]
 
     def has_open_orders(self, symbol):
-        """Mengecek apakah kita sedang memegang koin ini di memori komputer"""
         return symbol in self.virtual_portfolio
 
-    def buy_with_safety_net(self, symbol, current_price):
-        """
-        [MODE SIMULASI] Tidak akan benar-benar terkirim ke Binance.
-        Hanya numpang mencatat di buku catatan virtual bot.
-        """
+    def buy_with_safety_net(self, symbol, current_price, atr, regime, strategy_label):
+        """Beli virtual dengan TP/SL dinamis berbasis ATR & regime"""
         if self.virtual_balance < config.BUDGET_PER_TRADE_USDT:
-            msg = f"❌ TRANSAKSI SIMULASI BATAL: Saldo ${self.virtual_balance:.2f} tidak cukup untuk trade ${config.BUDGET_PER_TRADE_USDT}!"
+            msg = f"❌ BATAL: Saldo ${self.virtual_balance:.2f} tidak cukup untuk trade ${config.BUDGET_PER_TRADE_USDT}!"
             dashboard.add_log(msg)
             print(msg)
             return
-        
-        # Potong modal dari saldo saat beli (simulasi nyata)
+
         self.virtual_balance -= config.BUDGET_PER_TRADE_USDT
 
-        msg1 = f"📝 Simulasi AI mengeklik BELI {symbol} senilai ${config.BUDGET_PER_TRADE_USDT} di harga {current_price}"
+        tp_price, sl_price = self._calc_tp_sl(current_price, atr, regime)
+
+        tp_pct = ((tp_price - current_price) / current_price) * 100
+        sl_pct = ((current_price - sl_price) / current_price) * 100
+
+        msg1 = (f"📝 [{strategy_label}] BELI {symbol} @ {current_price:.4f} | "
+                f"TP: {tp_price:.4f} (+{tp_pct:.1f}%) | SL: {sl_price:.4f} (-{sl_pct:.1f}%)")
         dashboard.add_log(msg1)
         print(msg1)
-        
-        tp_price = current_price * (1 + config.TAKE_PROFIT_PCT)
-        sl_price = current_price * (1 - config.STOP_LOSS_PCT)
-        
+
         self.virtual_portfolio[symbol] = {
             'buy_price': current_price,
-            'tp_price': tp_price,
-            'sl_price': sl_price
+            'tp_price':  tp_price,
+            'sl_price':  sl_price,
+            'strategy':  strategy_label,
+            'atr':       atr,
         }
-        
-        msg2 = f"🛡️ Jaring OCO Virtual Pasang: TP: {tp_price:.4f} | SL: {sl_price:.4f}"
-        dashboard.add_log(msg2)
-        print(msg2)
-            
+
+    # ──────────────────────────────────────────────────────
+    # PRE-FILTER: BULL MARKET — Pullback ke EMA
+    # ──────────────────────────────────────────────────────
+    def _filter_bull_candidates(self, market_state: dict) -> dict:
+        """
+        Strategi BULL: cari koin yang pullback ke EMA20 dalam uptrend.
+        RSI tidak perlu oversold parah — cukup 40-60 (pullback sehat).
+        """
+        candidates = {}
+        for koin, data in market_state.items():
+            # Koin harus dalam uptrend di 15m
+            is_uptrend   = data['trend_ema'] == 'Strong Uptrend'
+            # RSI dalam zona pullback (bukan overbought)
+            is_pullback  = 35 <= data['rsi'] <= 62
+            # Volume tidak lesu
+            has_volume   = data.get('vol_ratio', 1.0) >= 0.8
+            # Cooldown setelah SL
+            loops_since_sl = self.loop_count - self.sl_cooldown.get(koin, -999)
+            is_on_cooldown = loops_since_sl < config.SL_COOLDOWN_LOOPS
+
+            if is_uptrend and is_pullback and has_volume and not is_on_cooldown:
+                # Konfirmasi MTF 1h — harus uptrend atau sideways
+                df_1h = self.get_historical_data(koin, interval=config.MTF_INTERVAL, limit=60)
+                if not df_1h.empty:
+                    df_1h     = hitung_indikator(df_1h)
+                    htf       = get_market_summary(df_1h)
+                    htf_trend = htf['trend_ema']
+                    if htf_trend == 'Strong Downtrend':
+                        print(f"   [BULL MTF ❌] {koin}: 1h={htf_trend} — skip")
+                    else:
+                        data['htf_1h_trend'] = htf_trend
+                        candidates[koin]     = data
+                        print(f"   [BULL MTF ✅] {koin}: RSI={data['rsi']} | 1h={htf_trend} → lolos ke AI")
+
+        return candidates
+
+    # ──────────────────────────────────────────────────────
+    # PRE-FILTER: RANGE MARKET — Bounce dari Lower BB
+    # ──────────────────────────────────────────────────────
+    def _filter_range_candidates(self, market_state: dict) -> dict:
+        """
+        Strategi RANGE: cari koin oversold ekstrem dekat lower Bollinger Band.
+        """
+        candidates = {}
+        for koin, data in market_state.items():
+            is_oversold       = data['rsi'] < 35 or data['stoch_rsi'] < 15
+            # Blok downtrend kuat (ADX threshold dinaikkan ke 40 — lebih konservatif)
+            is_dangerous      = (data['trend_ema'] == 'Strong Downtrend' and data['adx'] > 40)
+            has_volume        = data.get('vol_ratio', 1.0) >= 0.8
+            near_lower_band   = data.get('bb_pct', 50) < config.BB_PCT_THRESHOLD
+            loops_since_sl    = self.loop_count - self.sl_cooldown.get(koin, -999)
+            is_on_cooldown    = loops_since_sl < config.SL_COOLDOWN_LOOPS
+
+            if is_oversold and not is_dangerous and has_volume and near_lower_band and not is_on_cooldown:
+                df_1h = self.get_historical_data(koin, interval=config.MTF_INTERVAL, limit=60)
+                if not df_1h.empty:
+                    df_1h     = hitung_indikator(df_1h)
+                    htf       = get_market_summary(df_1h)
+                    htf_trend = htf['trend_ema']
+                    if htf_trend == 'Strong Downtrend':
+                        print(f"   [RANGE MTF ❌] {koin}: 1h={htf_trend} — skip meski 15m oversold")
+                    else:
+                        data['htf_1h_trend'] = htf_trend
+                        candidates[koin]     = data
+                        print(f"   [RANGE MTF ✅] {koin}: RSI={data['rsi']} BB={data.get('bb_pct',50):.1f}% | 1h={htf_trend} → lolos ke AI")
+
+        return candidates
+
+    # ──────────────────────────────────────────────────────
+    # MAIN LOOP
+    # ──────────────────────────────────────────────────────
     def run(self):
         dashboard.start_dashboard(5001)
-        dashboard.add_log("Mesin Spot Crypto (Mode Paper Trading) Siap Meluncur!")
-        
+        dashboard.add_log("🚀 Adaptive Multi-Regime Bot Aktif! (BEAR/BULL/RANGE Auto-Switch)")
+
         while True:
-            self.loop_count += 1  # Increment counter tiap siklus untuk tracking cooldown
+            self.loop_count += 1
             market_state = {}
-            radar_list = []
-            
-            print("\n🔄 Mengamankan Peta Radars...")
+            radar_list   = []
+
+            print(f"\n🔄 Loop #{self.loop_count} — Memindai pasar...")
+
+            # ── 1. Kumpulkan data semua koin ──
             for sym in config.SYMBOL_LIST:
                 df = self.get_historical_data(sym, interval=config.TIMEFRAME)
                 if not df.empty:
-                    df = hitung_indikator(df)
+                    df               = hitung_indikator(df)
                     market_state[sym] = get_market_summary(df)
-                    
-                    # Tambahkan ke radar dashboard UI
+
                     radar_list.append({
                         'symbol':    sym,
                         'price':     market_state[sym]['price'],
@@ -150,38 +256,42 @@ class BinanceBot:
                         'vol_ratio': market_state[sym].get('vol_ratio', 1.0),
                         'bb_pct':    market_state[sym].get('bb_pct', 50),
                     })
-                    
-                    # Cek apakah TP/SL fiktif kita sudah tersentuh
+
                     self.check_virtual_portfolio(sym, market_state[sym]['price'])
-                    print(f"   [{sym}] Harga: {market_state[sym]['price']:.4f} | RSI: {market_state[sym]['rsi']} | Tren: {market_state[sym]['trend_ema']}")
-            
-            # Format UI Positions
+                    print(f"   [{sym}] {market_state[sym]['price']:.4f} | RSI:{market_state[sym]['rsi']} | {market_state[sym]['trend_ema']} | ADX:{market_state[sym]['adx']}")
+
+            # ── 2. Deteksi Market Regime ──
+            regime = detect_market_regime(market_state)
+            regime_name = regime['regime']
+            print(f"\n{'='*60}")
+            print(f"🌐 MARKET REGIME: {regime['description']}")
+            print(f"   Uptrend: {regime['uptrend_pct']}% | Downtrend: {regime['downtrend_pct']}% | ADX avg: {regime['avg_adx']} | RSI avg: {regime['avg_rsi']}")
+            print(f"{'='*60}")
+            dashboard.add_log(f"🌐 REGIME: {regime['description']}")
+
+            # ── 3. Kalkulasi portofolio untuk dashboard ──
             active_pos_list = []
             for psym, pdata in self.virtual_portfolio.items():
-                cur_price = market_state[psym]['price'] if psym in market_state else pdata['buy_price']
-                # Kalkulasi (Price Now - Buy Price) / Buy Price * Saldo 
+                cur_price  = market_state[psym]['price'] if psym in market_state else pdata['buy_price']
                 pct_change = (cur_price - pdata['buy_price']) / pdata['buy_price']
-                fake_pnl = pct_change * config.BUDGET_PER_TRADE_USDT
+                fake_pnl   = pct_change * config.BUDGET_PER_TRADE_USDT
                 active_pos_list.append({
-                    'symbol': psym,
+                    'symbol':    psym,
+                    'strategy':  pdata.get('strategy', '-'),
                     'buy_price': pdata['buy_price'],
-                    'price': cur_price,
-                    'pnl': fake_pnl,
-                    'tp': pdata['tp_price'],
-                    'sl': pdata['sl_price']
+                    'price':     cur_price,
+                    'pnl':       fake_pnl,
+                    'tp':        pdata['tp_price'],
+                    'sl':        pdata['sl_price'],
                 })
-                
-            # Kalkulasi portfolio value yang benar:
-            # Saldo tunai + modal deployed di posisi aktif + unrealized PnL
-            deployed = len(self.virtual_portfolio) * config.BUDGET_PER_TRADE_USDT
-            unrealized = sum(p['pnl'] for p in active_pos_list)
+
+            deployed       = len(self.virtual_portfolio) * config.BUDGET_PER_TRADE_USDT
+            unrealized     = sum(p['pnl'] for p in active_pos_list)
             total_portfolio = self.virtual_balance + deployed + unrealized
 
-            # Hitung win rate dari histori
             tp_count = sum(1 for t in self.trade_history if t['type'] == 'TP')
             sl_count = sum(1 for t in self.trade_history if t['type'] == 'SL')
 
-            # Lempar semburan ke Web
             dashboard.update_state(
                 virtual_balance=self.virtual_balance,
                 total_profit=round(total_portfolio - 25.0, 2),
@@ -189,84 +299,102 @@ class BinanceBot:
                 positions=active_pos_list,
                 trade_history=self.trade_history,
                 tp_count=tp_count,
-                sl_count=sl_count
+                sl_count=sl_count,
+                market_regime=regime,
             )
 
-            # ========================================================
-            # 🛡️ PENCEGAHAN LIMIT API: PRE-FILTER TEKNIKAL
-            # ========================================================
-            # Hanya bangunkan AI jika koin tersebut BENAR-BENAR anjlok (Oversold Parah)
-            koin_potensial = {}
-            for koin, data in market_state.items():
-                # Filter 1: Oversold
-                is_oversold = data['rsi'] < 35 or data['stoch_rsi'] < 15
-                # Filter 2: Tolak downtrend brutal (jatuh bebas = jebakan SL)
-                is_dangerous_downtrend = (
-                    data['trend_ema'] == "Strong Downtrend" and data['adx'] > 25
-                )
-                # Filter 3: Volume minimal 80% dari rata-rata
-                has_volume = data.get('vol_ratio', 1.0) >= 0.8
-                # Filter 4: Cooldown pasca Cut Loss
-                loops_since_sl = self.loop_count - self.sl_cooldown.get(koin, -999)
-                is_on_cooldown = loops_since_sl < config.SL_COOLDOWN_LOOPS
-                # [BARU] Filter 5: Harga harus dekat lower Bollinger Band
-                near_lower_band = data.get('bb_pct', 50) < config.BB_PCT_THRESHOLD
+            # ── 4. Routing Strategi Berdasarkan Regime ──
 
-                if is_oversold and not is_dangerous_downtrend and has_volume and not is_on_cooldown and near_lower_band:
-                    # [BARU] Filter 6: Multi-Timeframe (MTF) — cek trend 1h
-                    # Hindari entry jika timeframe besar sedang downtrend (banyak false bounce!)
-                    df_1h = self.get_historical_data(koin, interval=config.MTF_INTERVAL, limit=60)
-                    if not df_1h.empty:
-                        df_1h   = hitung_indikator(df_1h)
-                        htf     = get_market_summary(df_1h)
-                        htf_trend = htf['trend_ema']
-                        if htf_trend == "Strong Downtrend":
-                            print(f"   [MTF ❌] {koin}: 1h={htf_trend} — skip meski 15m oversold")
-                        else:
-                            data['htf_1h_trend'] = htf_trend  # Kirim ke AI sebagai konteks
-                            koin_potensial[koin] = data
-                            print(f"   [MTF ✅] {koin}: 15m={data['trend_ema']} | 1h={htf_trend} → lolos ke AI")
+            # ████ BEAR MARKET — BOT DIAM ████
+            if regime_name == 'BEAR':
+                wait_msg = (f"🐻 BEAR MARKET — Bot menunggu kondisi aman. "
+                            f"Downtrend {regime['downtrend_pct']}% | ADX {regime['avg_adx']}. "
+                            f"Modal dilindungi.")
+                dashboard.add_log(wait_msg)
+                print(f"\n{wait_msg}\n")
 
-            if not koin_potensial:
-                print("⏳ Status: Pasar Kripto membosankan (Tidak ada indikasi Oversold). Groq Llama-3 tertidur santai (Hemat Kuota Limit).")
-            else:
-                print(f"\n🧠 Ada {len(koin_potensial)} koin berpotensi! Membangunkan Groq Llama-3 untuk seleksi ketat...")
-                ai_decisions = self.ai.analyze_opportunity(koin_potensial)
-                
-                if not ai_decisions:
-                    print("⚠️ AI Memutuskan: Batal beli, risiko masih terlalu besar.")
-                
-                for dec in ai_decisions:
-                    sym = dec.get('symbol')
-                    action = dec.get('decision')
-                    reason = dec.get('reason')
-                    
-                    if action == 'BUY' and sym in koin_potensial:
+            # ████ BULL MARKET — TREND FOLLOWING ████
+            elif regime_name == 'BULL':
+                print(f"\n🐂 BULL MARKET — Mencari entry pullback ke EMA...")
+                koin_potensial = self._filter_bull_candidates(market_state)
+
+                if not koin_potensial:
+                    print("⏳ Tidak ada koin dengan setup pullback valid.")
+                else:
+                    print(f"\n🧠 {len(koin_potensial)} kandidat BULL ditemukan! Konsultasi ke AI...")
+                    ai_decisions = self.ai.analyze_opportunity(koin_potensial, regime)
+
+                    for dec in ai_decisions:
+                        sym        = dec.get('symbol')
+                        action     = dec.get('decision')
                         confidence = dec.get('confidence', 0)
-                        if confidence < config.AI_MIN_CONFIDENCE:
-                            low_conf_msg = f"⏭️ SKIP {sym}: AI confidence {confidence}/10 terlalu rendah (min {config.AI_MIN_CONFIDENCE})"
-                            dashboard.add_log(low_conf_msg)
-                            print(low_conf_msg)
-                            continue
-                        res_msg = f"🚀 Keputusan Final AI → BELI {sym} [Confidence: {confidence}/10]\nAlasan: {reason}"
-                        dashboard.add_log(res_msg)
-                        print(res_msg)
-                        
-                        if len(self.virtual_portfolio) >= config.MAX_OPEN_POSITIONS:
-                            skip_msg = f"⏭️ SKIP: Sudah ada {config.MAX_OPEN_POSITIONS} posisi aktif. Tunggu TP/SL dulu sebelum buka posisi baru."
-                            dashboard.add_log(skip_msg)
-                            print(skip_msg)
-                            break  # Hentikan loop koin, tidak perlu cek selanjutnya
-                        elif self.has_open_orders(sym):
-                            dashboard.add_log(f"⏭️ SKIP PEMBELIAN: Dompet Binance Anda masih memegang {sym}.")
-                        else:
-                            current_price = market_state[sym]['price']
-                            self.buy_with_safety_net(sym, current_price)
-                            
-            # ========================================================
-                        
-            # Tidur selama interval dan kembali menyapu market
+                        reason     = dec.get('reason', '')
+
+                        if action == 'BUY' and sym in koin_potensial:
+                            if confidence < config.AI_MIN_CONFIDENCE:
+                                msg = f"⏭️ SKIP {sym}: confidence {confidence}/10 terlalu rendah"
+                                dashboard.add_log(msg); print(msg)
+                                continue
+
+                            if len(self.virtual_portfolio) >= config.MAX_OPEN_POSITIONS:
+                                msg = f"⏭️ SKIP: Sudah {config.MAX_OPEN_POSITIONS} posisi aktif."
+                                dashboard.add_log(msg); print(msg)
+                                break
+                            elif self.has_open_orders(sym):
+                                dashboard.add_log(f"⏭️ SKIP: Masih hold {sym}.")
+                            else:
+                                msg = f"🚀 AI → BELI {sym} [Conf:{confidence}/10] — {reason}"
+                                dashboard.add_log(msg); print(msg)
+                                self.buy_with_safety_net(
+                                    sym,
+                                    market_state[sym]['price'],
+                                    market_state[sym].get('atr', 0),
+                                    regime_name,
+                                    'BULL-Pullback'
+                                )
+
+            # ████ RANGE MARKET — MEAN REVERSION BOUNCE ████
+            else:
+                print(f"\n📊 RANGING MARKET — Mencari entry bounce di BB bawah...")
+                koin_potensial = self._filter_range_candidates(market_state)
+
+                if not koin_potensial:
+                    print("⏳ Tidak ada koin oversold di dekat lower Bollinger Band.")
+                else:
+                    print(f"\n🧠 {len(koin_potensial)} kandidat RANGE ditemukan! Konsultasi ke AI...")
+                    ai_decisions = self.ai.analyze_opportunity(koin_potensial, regime)
+
+                    for dec in ai_decisions:
+                        sym        = dec.get('symbol')
+                        action     = dec.get('decision')
+                        confidence = dec.get('confidence', 0)
+                        reason     = dec.get('reason', '')
+
+                        if action == 'BUY' and sym in koin_potensial:
+                            if confidence < config.AI_MIN_CONFIDENCE:
+                                msg = f"⏭️ SKIP {sym}: confidence {confidence}/10 terlalu rendah"
+                                dashboard.add_log(msg); print(msg)
+                                continue
+
+                            if len(self.virtual_portfolio) >= config.MAX_OPEN_POSITIONS:
+                                msg = f"⏭️ SKIP: Sudah {config.MAX_OPEN_POSITIONS} posisi aktif."
+                                dashboard.add_log(msg); print(msg)
+                                break
+                            elif self.has_open_orders(sym):
+                                dashboard.add_log(f"⏭️ SKIP: Masih hold {sym}.")
+                            else:
+                                msg = f"🚀 AI → BELI {sym} [Conf:{confidence}/10] — {reason}"
+                                dashboard.add_log(msg); print(msg)
+                                self.buy_with_safety_net(
+                                    sym,
+                                    market_state[sym]['price'],
+                                    market_state[sym].get('atr', 0),
+                                    regime_name,
+                                    'RANGE-Bounce'
+                                )
+
             time.sleep(config.LOOP_INTERVAL_SECONDS)
+
 
 if __name__ == "__main__":
     bot = BinanceBot()

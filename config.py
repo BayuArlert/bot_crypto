@@ -8,14 +8,13 @@ load_dotenv()
 # ============================================================
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET  = os.getenv("BINANCE_SECRET_KEY", "")
-GROQ_API_KEY    = os.getenv("GROQ_API_KEY", "") # Pindah ke Groq Llama-3
+GROQ_API_KEY    = os.getenv("GROQ_API_KEY", "")
 
 # ============================================================
 # 2. MARKET SETTINGS
 # ============================================================
 MARKET_TYPE = "SPOT"
 
-# Koin-koin favorit yang akan dipantau AI 
 SYMBOL_LIST = [
     'BTCUSDT',  # Bitcoin
     'ETHUSDT',  # Ethereum
@@ -23,31 +22,53 @@ SYMBOL_LIST = [
     'BNBUSDT',  # Binance Coin
     'XRPUSDT',  # Ripple
     'ADAUSDT',  # Cardano
-    'AVAXUSDT', # Avalanche   - Volatilitas tinggi, sering bouncing tajam
-    'LINKUSDT', # Chainlink   - Favorit scalper, reversal cepat
-    'DOGEUSDT', # Dogecoin    - Volume Binance sangat besar, micro-bounce rutin
+    'AVAXUSDT', # Avalanche
+    'LINKUSDT', # Chainlink
+    'DOGEUSDT', # Dogecoin
 ]
 
-# Timeframe yang ditangkap (15m sangat pas untuk napas Scalping cepat)
-TIMEFRAME = "15m"
+TIMEFRAME   = "15m"
+MTF_INTERVAL = "1h"
 
 # ============================================================
-# 3. RISIKO & MODAL (Mazhab A: Cut Loss Ketat)
+# 3. RISIKO & MODAL
 # ============================================================
-# Bot hanya diizinkan membeli dengan modal statis per koin, 
-# Tujuannya agar saldo pecah/terbagi rata jika AI menyuruh beli semua koin di atas.
-BUDGET_PER_TRADE_USDT = 10.0  # $10 per tembakan (AI max 2 posisi = $20, sisa $5 buffer)
-MAX_OPEN_POSITIONS    = 2     # Maksimal posisi aktif sekaligus (2×$10=$20 dari $25 modal)
-SL_COOLDOWN_LOOPS     = 3     # Loop cooldown pasca Cut Loss (3 loop × 60 detik = 3 menit jeda)
-BB_PCT_THRESHOLD      = 35    # Harga harus di bawah 35% BB (dekat lower band = zona bounce)
-AI_MIN_CONFIDENCE     = 7     # Minimum skor keyakinan AI (1-10) untuk eksekusi entry
-MTF_INTERVAL          = "1h"  # Timeframe lebih besar untuk konfirmasi arah trend
-
-STOP_LOSS_PCT   = 0.01  # -1% otomatis Cut loss (ketat, cocok untuk scalping rutin)
-TAKE_PROFIT_PCT = 0.015 # +1.5% otomatis Jual Untung (realistis & rutin di timeframe 15m)
+BUDGET_PER_TRADE_USDT = 10.0
+MAX_OPEN_POSITIONS    = 2
+SL_COOLDOWN_LOOPS     = 10    # 10 menit jeda setelah SL (lebih konservatif)
+BB_PCT_THRESHOLD      = 35    # Hanya untuk strategi RANGE
+AI_MIN_CONFIDENCE     = 7
 
 # ============================================================
-# 4. BOT INTERVAL
+# 4. TP/SL DINAMIS PER REGIME
+#    Menggunakan multiplier ATR agar otomatis menyesuaikan volatilitas
 # ============================================================
-# Berapa detik bot mengulang pekerjaannya (Aman untuk CPU & Kuota: 1 Menit)
+
+# Regime RANGE (Sideways) — Mean Reversion Bounce
+# Target kecil, cepat keluar, SL ketat
+RANGE_TP_ATR_MULT = 1.5   # TP = harga_beli + 1.5 × ATR
+RANGE_SL_ATR_MULT = 1.0   # SL = harga_beli - 1.0 × ATR
+
+# Regime BULL (Uptrend Kuat) — Trend Following
+# Target lebih lebar, SL sedikit lebih longgar karena momentum membantu
+BULL_TP_ATR_MULT  = 2.5   # TP = harga_beli + 2.5 × ATR
+BULL_SL_ATR_MULT  = 1.2   # SL = harga_beli - 1.2 × ATR
+
+# Fallback persen jika ATR = 0 (sangat jarang)
+FALLBACK_TP_PCT = 0.015   # 1.5%
+FALLBACK_SL_PCT = 0.010   # 1.0%
+
+# ============================================================
+# 5. MARKET REGIME THRESHOLDS
+# ============================================================
+# Persentase minimum koin yang downtrend agar dianggap BEAR MARKET
+BEAR_DOWNTREND_THRESHOLD_PCT = 60   # 60% koin harus downtrend
+BEAR_ADX_THRESHOLD           = 35   # Rata-rata ADX harus >= 35
+
+# Persentase minimum koin yang uptrend agar dianggap BULL MARKET
+BULL_UPTREND_THRESHOLD_PCT   = 55   # 55% koin harus uptrend
+
+# ============================================================
+# 6. BOT INTERVAL
+# ============================================================
 LOOP_INTERVAL_SECONDS = 60
