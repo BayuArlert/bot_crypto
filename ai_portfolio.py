@@ -4,7 +4,7 @@ from groq import Groq
 class AIPortfolioManager:
     def __init__(self, api_key: str):
         self.client = Groq(api_key=api_key)
-        self.model  = 'llama-3.1-8b-instant'
+        self.model  = 'llama-3.3-70b-versatile'
 
     def analyze_opportunity(self, market_data: dict, regime: dict) -> list[dict]:
         """
@@ -16,53 +16,88 @@ class AIPortfolioManager:
         avg_adx     = regime.get('avg_adx', 0)
         avg_rsi     = regime.get('avg_rsi', 50)
 
-        # Panduan strategi berdasarkan regime yang dikirim ke AI
         if regime_name == 'BULL':
             strategy_guide = """
-REGIME: BULL MARKET — Strategi TREND FOLLOWING.
-- Cari koin yang sedang pullback (RSI 40-55) ke EMA20 dalam uptrend
-- bb_pct boleh 30-60 (tidak harus di lower band seperti di RANGE)
-- adx > 20 dan trend Strong Uptrend adalah KONDISI IDEAL
-- htf_1h_trend harus Uptrend atau Sideways (BUKAN Downtrend)
-- Hindari koin yang RSI-nya sudah > 70 (overbought, sudah telat entry)
-LARANGAN: Jangan beli koin yang masih Strong Downtrend meski RSI oversold.
+REGIME: BULL MARKET — Strategi TREND FOLLOWING (Pullback ke EMA20).
+
+SYARAT BUY — semua wajib terpenuhi:
+  [1] trend_ema = 'Strong Uptrend' di 15m  ← WAJIB, tidak bisa dikecualikan
+  [2] RSI antara 40–52                      ← zona pullback sehat
+  [3] candle_color = 'bullish'              ← harus ada tanda reversal
+  [4] htf_1h_trend BUKAN 'Strong Downtrend' ← jangan lawan tren besar
+  [5] vol_ratio >= 1.0                      ← volume tidak lesu
+  [6] adx > 20                              ← trend punya tenaga
+
+LARANGAN (langsung SKIP tanpa pengecualian):
+  ✗ RSI > 55       → sudah terlalu naik, telat entry
+  ✗ adx < 15       → pasar terlalu lemah untuk trend following
+  ✗ htf_1h_trend = 'Strong Downtrend' → melawan arus besar
+
+SCORING:
+  8 = syarat [1]–[4] semua terpenuhi
+  9 = semua syarat terpenuhi + vol_ratio > 1.3
+  Jika ada 1 syarat yang tidak terpenuhi → SKIP, bukan BUY
 """
         else:  # RANGE
             strategy_guide = """
-REGIME: RANGING/SIDEWAYS MARKET — Strategi MEAN REVERSION.
-- Cari koin yang oversold ekstrem: RSI < 35 DAN stoch_rsi < 15
-- bb_pct HARUS < 35 (harga dekat lower Bollinger Band)
-- adx < 25 DIUTAMAKAN (trend lemah = pantul lebih aman)
-- htf_1h_trend harus Sideways atau Uptrend (BUKAN Strong Downtrend)
-LARANGAN: Jangan beli jika Strong Downtrend + adx > 40.
+REGIME: RANGING/SIDEWAYS MARKET — Strategi MEAN REVERSION (Bounce Lower BB).
+
+SYARAT BUY — semua wajib terpenuhi:
+  [1] bb_pct < 30                            ← harga harus di dekat lower band
+  [2] RSI < 35 DAN stoch_rsi < 20           ← oversold yang terkonfirmasi
+  [3] candle_color = 'bullish'              ← bounce harus sudah mulai terlihat
+  [4] htf_1h_trend BUKAN 'Strong Downtrend' ← jangan lawan tren 1 jam
+  [5] adx < 30 (diutamakan)                 ← trend lemah = pantul lebih aman
+
+LARANGAN (langsung SKIP tanpa pengecualian):
+  ✗ bb_pct > 30          → harga belum di lower band, terlalu dini
+  ✗ stoch_rsi > 25       → momentum belum benar-benar oversold
+  ✗ trend_ema = 'Strong Downtrend' AND adx > 35 → downtrend kuat, jangan lawan
+
+SCORING:
+  8 = syarat [1]–[4] semua terpenuhi
+  9 = semua syarat terpenuhi + vol_ratio > 1.2 (ada buying pressure)
+  Jika ada 1 syarat yang tidak terpenuhi → SKIP, bukan BUY
 """
 
+        n_candidates = len(market_data)
         prompt = f"""
-Anda adalah AI Crypto Scalper Profesional. Analisis peluang trading berdasarkan kondisi pasar saat ini.
+Anda adalah AI Crypto Scalper Senior. Misi utama Anda:
+HANYA menyetujui trade dengan setup SEMPURNA. Tolak semua yang meragukan.
 
-KONDISI PASAR GLOBAL SAAT INI:
-- Regime: {regime_name} — {regime_desc}
-- Rata-rata ADX semua koin: {avg_adx}
-- Rata-rata RSI semua koin: {avg_rsi}
+MOTTO: "Better miss a trade than take a bad one."
+
+KONDISI PASAR GLOBAL:
+- Regime : {regime_name} — {regime_desc}
+- ADX avg: {avg_adx} | RSI avg: {avg_rsi}
+- Jumlah kandidat yang sudah lolos pre-filter: {n_candidates} koin
+  (Karena pre-filter sudah ketat, kandidat ini SEHARUSNYA layak — namun tetap evaluasi ulang secara kritis)
 
 {strategy_guide}
 
-DATA KOIN KANDIDAT (Candle Closed, sudah lolos pre-filter teknikal):
+DATA KOIN KANDIDAT:
 {json.dumps(market_data, indent=2)}
 
-PANDUAN INDIKATOR:
-- rsi: nilai momentum (< 35 = oversold, > 65 = overbought)
-- stoch_rsi: momentum cepat (< 15 = sangat oversold)
-- bb_pct: posisi harga di Bollinger Band (0 = lower, 100 = upper)
-- vol_ratio: kekuatan volume (> 1.2 = kuat, < 0.8 = lemah — hindari)
-- adx: kekuatan trend (> 40 = trending kuat, < 20 = sideways)
-- htf_1h_trend: konfirmasi timeframe 1 jam
+LEGENDA INDIKATOR:
+- rsi          : momentum (< 35 = oversold, > 65 = overbought)
+- stoch_rsi    : momentum cepat (< 15 = sangat oversold)
+- bb_pct       : posisi di BB (0 = lower band, 50 = tengah, 100 = upper band)
+- vol_ratio    : rasio volume vs rata-rata 20 candle (> 1.2 kuat, < 0.8 lesu)
+- adx          : kekuatan trend (> 40 trending keras, < 20 sideways)
+- ema20        : harga EMA20 absolut (bandingkan dengan 'price' untuk cek proximity)
+- candle_color : warna candle terakhir yang closed ('bullish' = hijau, 'bearish' = merah)
+- htf_1h_trend : konfirmasi tren dari timeframe 1 jam (prioritas TINGGI)
 
-Pilih MAKSIMAL 1-2 koin terbaik. Sertakan confidence 1-10 (min 7 untuk BUY).
-Jika tidak ada setup yang valid, kembalikan decisions kosong.
+INSTRUKSI:
+1. Cek setiap koin terhadap checklist syarat di atas satu per satu
+2. Jika ADA SATU LARANGAN yang dilanggar → langsung SKIP koin tersebut
+3. Pilih MAKSIMAL 1 koin dengan setup paling solid
+4. Confidence 8+ HANYA jika SEMUA syarat wajib terpenuhi tanpa terkecuali
+5. Tulis reason dalam 1 kalimat: sebutkan 2-3 faktor kunci yang menentukan keputusan
+6. Jika tidak ada koin yang lolos semua syarat → kembalikan decisions kosong
 
-JSON Output WAJIB:
-{{"decisions":[{{"symbol":"X","decision":"BUY","confidence":8,"reason":"alasan singkat"}}]}}
+JSON Output (tanpa teks di luar JSON):
+{{"decisions":[{{"symbol":"XXXUSDT","decision":"BUY","confidence":8,"reason":"RSI 45 pullback ke EMA20, candle bullish, 1h uptrend, vol 1.3x"}}]}}
 Jika tidak ada: {{"decisions":[]}}
 """
         try:
@@ -70,7 +105,12 @@ Jika tidak ada: {{"decisions":[]}}
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a professional JSON Crypto Bot. You MUST output ONLY valid JSON. Never include text outside JSON."
+                        "content": (
+                            "Kamu adalah sistem analisis trading crypto berbasis JSON. "
+                            "Tugasmu: evaluasi data indikator teknikal dan putuskan apakah layak BUY atau SKIP. "
+                            "Output HANYA berupa JSON valid sesuai format yang diminta. "
+                            "Jangan tambahkan teks, penjelasan, atau komentar di luar JSON."
+                        )
                     },
                     {
                         "role": "user",
@@ -78,7 +118,7 @@ Jika tidak ada: {{"decisions":[]}}
                     }
                 ],
                 model=self.model,
-                temperature=0.2,
+                temperature=0.1,
                 response_format={"type": "json_object"}
             )
 

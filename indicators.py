@@ -74,17 +74,24 @@ def get_market_summary(df: pd.DataFrame) -> dict:
     else:
         trend = "Sideways / Choppy"
 
+    # Warna candle yang sudah closed: bullish = close >= open
+    candle_color = 'bullish' if curr['close'] >= curr['open'] else 'bearish'
+
     return {
-        'price':     curr['close'],
-        'rsi':       round(curr['rsi_14'],    2) if not pd.isna(curr['rsi_14'])    else 50,
-        'stoch_rsi': round(curr['stoch_rsi'], 2) if not pd.isna(curr['stoch_rsi']) else 50,
-        'adx':       round(curr['adx_14'],    2) if not pd.isna(curr['adx_14'])    else 0,
-        'trend_ema': trend,
-        'atr':       round(curr['atr_14'],    6) if not pd.isna(curr['atr_14'])    else 0,
+        'price':        curr['close'],
+        'rsi':          round(curr['rsi_14'],    2) if not pd.isna(curr['rsi_14'])    else 50,
+        'stoch_rsi':    round(curr['stoch_rsi'], 2) if not pd.isna(curr['stoch_rsi']) else 50,
+        'adx':          round(curr['adx_14'],    2) if not pd.isna(curr['adx_14'])    else 0,
+        'trend_ema':    trend,
+        'atr':          round(curr['atr_14'],    6) if not pd.isna(curr['atr_14'])    else 0,
         # bb_pct: 0=di lower band (oversold), 50=tengah, 100=upper band (overbought)
-        'bb_pct':    round(curr['bb_pct'],    2) if not pd.isna(curr['bb_pct'])    else 50,
+        'bb_pct':       round(curr['bb_pct'],    2) if not pd.isna(curr['bb_pct'])    else 50,
         # vol_ratio: 1.0=normal, >1.5=volume tinggi (sinyal kuat), <0.8=volume lesu
-        'vol_ratio': round(curr['vol_ratio'], 2) if not pd.isna(curr['vol_ratio']) else 1.0,
+        'vol_ratio':    round(curr['vol_ratio'], 2) if not pd.isna(curr['vol_ratio']) else 1.0,
+        # ema20: harga absolut EMA20 — untuk cek apakah harga benar-benar dekat EMA
+        'ema20':        round(curr['ema_20'],    6) if not pd.isna(curr['ema_20'])    else curr['close'],
+        # candle_color: konfirmasi arah candle terakhir yang closed
+        'candle_color': candle_color,
     }
 
 

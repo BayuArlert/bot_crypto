@@ -35,9 +35,13 @@ MTF_INTERVAL = "1h"
 # ============================================================
 BUDGET_PER_TRADE_USDT = 10.0
 MAX_OPEN_POSITIONS    = 2
-SL_COOLDOWN_LOOPS     = 10    # 10 menit jeda setelah SL (lebih konservatif)
-BB_PCT_THRESHOLD      = 35    # Hanya untuk strategi RANGE
-AI_MIN_CONFIDENCE     = 7
+SL_COOLDOWN_LOOPS     = 15    # 15 loop jeda setelah SL (lebih konservatif)
+BB_PCT_THRESHOLD      = 30    # Lebih ketat: harga harus benar-benar di dekat lower band
+AI_MIN_CONFIDENCE     = 8     # Naikkan dari 7 → 8 agar AI lebih selektif
+
+# Filter tambahan untuk presisi entry
+BULL_EMA_PROXIMITY    = 1.008 # Harga max 0.8% di ATAS EMA20 (harus benar-benar pullback)
+MIN_VOL_RATIO         = 1.0   # Volume minimal setara rata-rata (bukan lesu)
 
 # ============================================================
 # 4. TP/SL DINAMIS PER REGIME
@@ -45,18 +49,18 @@ AI_MIN_CONFIDENCE     = 7
 # ============================================================
 
 # Regime RANGE (Sideways) — Mean Reversion Bounce
-# Target kecil, cepat keluar, SL ketat
-RANGE_TP_ATR_MULT = 1.5   # TP = harga_beli + 1.5 × ATR
-RANGE_SL_ATR_MULT = 1.0   # SL = harga_beli - 1.0 × ATR
+# Target 2x lebih besar dari SL → RR = 2.5:1
+RANGE_TP_ATR_MULT = 2.0   # TP = harga_beli + 2.0 × ATR  (naik dari 1.5)
+RANGE_SL_ATR_MULT = 0.8   # SL = harga_beli - 0.8 × ATR  (lebih ketat → RR 2.5:1)
 
 # Regime BULL (Uptrend Kuat) — Trend Following
-# Target lebih lebar, SL sedikit lebih longgar karena momentum membantu
-BULL_TP_ATR_MULT  = 2.5   # TP = harga_beli + 2.5 × ATR
-BULL_SL_ATR_MULT  = 1.2   # SL = harga_beli - 1.2 × ATR
+# Target 3x lebih besar dari SL → RR = 3.0:1
+BULL_TP_ATR_MULT  = 3.0   # TP = harga_beli + 3.0 × ATR  (naik dari 2.5)
+BULL_SL_ATR_MULT  = 1.0   # SL = harga_beli - 1.0 × ATR  (lebih ketat → RR 3.0:1)
 
 # Fallback persen jika ATR = 0 (sangat jarang)
-FALLBACK_TP_PCT = 0.015   # 1.5%
-FALLBACK_SL_PCT = 0.010   # 1.0%
+FALLBACK_TP_PCT = 0.018   # 1.8%
+FALLBACK_SL_PCT = 0.008   # 0.8%
 
 # ============================================================
 # 5. MARKET REGIME THRESHOLDS

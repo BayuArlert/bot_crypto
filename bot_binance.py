@@ -163,22 +163,33 @@ class BinanceBot:
     # ──────────────────────────────────────────────────────
     def _filter_bull_candidates(self, market_state: dict) -> dict:
         """
-        Strategi BULL: cari koin yang pullback ke EMA20 dalam uptrend.
-        RSI tidak perlu oversold parah — cukup 40-60 (pullback sehat).
+        Strategi BULL: cari koin yang pullback KE EMA20 dalam uptrend.
+        RSI harus di zona pullback KETAT (40-52), bukan mendekati puncak.
+        Harga juga harus benar-benar dekat atau di bawah EMA20.
         """
         candidates = {}
         for koin, data in market_state.items():
-            # Koin harus dalam uptrend di 15m
-            is_uptrend   = data['trend_ema'] == 'Strong Uptrend'
-            # RSI dalam zona pullback (bukan overbought)
-            is_pullback  = 35 <= data['rsi'] <= 62
-            # Volume tidak lesu
-            has_volume   = data.get('vol_ratio', 1.0) >= 0.8
-            # Cooldown setelah SL
+            # [1] Harus dalam uptrend di 15m
+            is_uptrend = data['trend_ema'] == 'Strong Uptrend'
+
+            # [2] RSI zona pullback KETAT (40-52) — bukan mendekati overbought
+            rsi = data['rsi']
+            is_pullback = 40 <= rsi <= 52
+
+            # [3] Harga harus benar-benar dekat atau di bawah EMA20
+            #     Mencegah bot beli koin yang sudah jauh di atas EMA
+            price = data['price']
+            ema20 = data.get('ema20', price)
+            near_ema = price <= ema20 * config.BULL_EMA_PROXIMITY
+
+            # [4] Volume minimal setara rata-rata (bukan lesu)
+            has_volume = data.get('vol_ratio', 1.0) >= config.MIN_VOL_RATIO
+
+            # [5] Cooldown setelah SL
             loops_since_sl = self.loop_count - self.sl_cooldown.get(koin, -999)
             is_on_cooldown = loops_since_sl < config.SL_COOLDOWN_LOOPS
 
-            if is_uptrend and is_pullback and has_volume and not is_on_cooldown:
+            if is_uptrend and is_pullback and near_ema and has_volume and not is_on_cooldown:
                 # Konfirmasi MTF 1h — harus uptrend atau sideways
                 df_1h = self.get_historical_data(koin, interval=config.MTF_INTERVAL, limit=60)
                 if not df_1h.empty:
@@ -190,7 +201,17 @@ class BinanceBot:
                     else:
                         data['htf_1h_trend'] = htf_trend
                         candidates[koin]     = data
-                        print(f"   [BULL MTF ✅] {koin}: RSI={data['rsi']} | 1h={htf_trend} → lolos ke AI")
+                        candle_info = data.get('candle_color', '?')
+                        print(f"   [BULL MTF ✅] {koin}: RSI={rsi} | EMA20={ema20:.4f} vs Price={price:.4f} | Candle={candle_info} | 1h={htf_trend} → lolos ke AI")
+            else:
+                # Log alasan skip agar mudah di-debug
+                skip_reasons = []
+                if not is_uptrend:   skip_reasons.append(f"trend={data['trend_ema']}")
+                if not is_pullback:  skip_reasons.append(f"RSI={rsi} (butuh 40-52)")
+                if not near_ema:     skip_reasons.append(f"price={price:.4f} jauh dari EMA20={ema20:.4f}")
+                if not has_volume:   skip_reasons.append(f"vol={data.get('vol_ratio',0):.2f} (butuh ≥1.0)")
+                if is_on_cooldown:   skip_reasons.append(f"cooldown SL")
+                print(f"   [BULL SKIP] {koin}: {', '.join(skip_reasons)}")
 
         return candidates
 
@@ -200,18 +221,33 @@ class BinanceBot:
     def _filter_range_candidates(self, market_state: dict) -> dict:
         """
         Strategi RANGE: cari koin oversold ekstrem dekat lower Bollinger Band.
+        Filter diperketat: volume harus ada, candle bullish jadi poin plus.
         """
         candidates = {}
         for koin, data in market_state.items():
-            is_oversold       = data['rsi'] < 35 or data['stoch_rsi'] < 15
-            # Blok downtrend kuat (ADX threshold dinaikkan ke 40 — lebih konservatif)
-            is_dangerous      = (data['trend_ema'] == 'Strong Downtrend' and data['adx'] > 40)
-            has_volume        = data.get('vol_ratio', 1.0) >= 0.8
-            near_lower_band   = data.get('bb_pct', 50) < config.BB_PCT_THRESHOLD
-            loops_since_sl    = self.loop_count - self.sl_cooldown.get(koin, -999)
-            is_on_cooldown    = loops_since_sl < config.SL_COOLDOWN_LOOPS
+            rsi       = data['rsi']
+            stoch_rsi = data['stoch_rsi']
+            bb_pct    = data.get('bb_pct', 50)
+            vol_ratio = data.get('vol_ratio', 1.0)
+
+            # [1] Oversold: RSI < 35 ATAU stoch_rsi sangat rendah
+            is_oversold    = rsi < 35 or stoch_rsi < 15
+
+            # [2] Blok downtrend kuat
+            is_dangerous   = (data['trend_ema'] == 'Strong Downtrend' and data['adx'] > 35)
+
+            # [3] Volume setara rata-rata (bukan lesu) — naik dari 0.8 ke 1.0
+            has_volume     = vol_ratio >= config.MIN_VOL_RATIO
+
+            # [4] Harga harus benar-benar di dekat lower band (30, lebih ketat dari 35)
+            near_lower_band = bb_pct < config.BB_PCT_THRESHOLD
+
+            # [5] Cooldown setelah SL
+            loops_since_sl = self.loop_count - self.sl_cooldown.get(koin, -999)
+            is_on_cooldown = loops_since_sl < config.SL_COOLDOWN_LOOPS
 
             if is_oversold and not is_dangerous and has_volume and near_lower_band and not is_on_cooldown:
+                # Konfirmasi MTF 1h
                 df_1h = self.get_historical_data(koin, interval=config.MTF_INTERVAL, limit=60)
                 if not df_1h.empty:
                     df_1h     = hitung_indikator(df_1h)
@@ -222,7 +258,16 @@ class BinanceBot:
                     else:
                         data['htf_1h_trend'] = htf_trend
                         candidates[koin]     = data
-                        print(f"   [RANGE MTF ✅] {koin}: RSI={data['rsi']} BB={data.get('bb_pct',50):.1f}% | 1h={htf_trend} → lolos ke AI")
+                        candle_info = data.get('candle_color', '?')
+                        print(f"   [RANGE MTF ✅] {koin}: RSI={rsi} | StochRSI={stoch_rsi} | BB={bb_pct:.1f}% | Candle={candle_info} | 1h={htf_trend} → lolos ke AI")
+            else:
+                skip_reasons = []
+                if not is_oversold:       skip_reasons.append(f"RSI={rsi} StochRSI={stoch_rsi} (belum oversold)")
+                if is_dangerous:          skip_reasons.append(f"downtrend kuat ADX={data['adx']}")
+                if not has_volume:        skip_reasons.append(f"vol={vol_ratio:.2f} (butuh ≥1.0)")
+                if not near_lower_band:   skip_reasons.append(f"bb_pct={bb_pct:.1f} (butuh <{config.BB_PCT_THRESHOLD})")
+                if is_on_cooldown:        skip_reasons.append("cooldown SL")
+                print(f"   [RANGE SKIP] {koin}: {', '.join(skip_reasons)}")
 
         return candidates
 
