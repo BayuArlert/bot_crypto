@@ -22,20 +22,22 @@ REGIME: BULL MARKET — Strategi TREND FOLLOWING (Pullback ke EMA20).
 
 SYARAT BUY — semua wajib terpenuhi:
   [1] trend_ema = 'Strong Uptrend' di 15m  ← WAJIB, tidak bisa dikecualikan
-  [2] RSI antara 40–52                      ← zona pullback sehat
-  [3] candle_color = 'bullish'              ← harus ada tanda reversal
-  [4] htf_1h_trend BUKAN 'Strong Downtrend' ← jangan lawan tren besar
-  [5] vol_ratio >= 1.0                      ← volume tidak lesu
-  [6] adx > 20                              ← trend punya tenaga
+  [2] RSI antara 40–55                      ← zona pullback sehat
+  [3] rsi_slope > 0                         ← WAJIB: momentum harus sudah mulai naik!
+  [4] candle_color = 'bullish'              ← WAJIB: harus ada tanda reversal/buying
+  [5] htf_1h_trend BUKAN 'Strong Downtrend' ← jangan lawan tren besar
+  [6] vol_ratio >= 1.0                      ← volume tidak lesu
+  [7] adx > 20                              ← trend punya tenaga
 
 LARANGAN (langsung SKIP tanpa pengecualian):
+  ✗ rsi_slope <= 0 → momentum masih turun (pisau jatuh), JANGAN DITANGKAP!
   ✗ RSI > 55       → sudah terlalu naik, telat entry
   ✗ adx < 15       → pasar terlalu lemah untuk trend following
   ✗ htf_1h_trend = 'Strong Downtrend' → melawan arus besar
 
 SCORING:
-  8 = syarat [1]–[4] semua terpenuhi
-  9 = semua syarat terpenuhi + vol_ratio > 1.3
+  8 = syarat [1]–[7] semua terpenuhi
+  9 = semua syarat terpenuhi + rsi_slope > 2 + body_pct > 50 (candle kuat)
   Jika ada 1 syarat yang tidak terpenuhi → SKIP, bukan BUY
 """
         else:  # RANGE
@@ -56,7 +58,7 @@ LARANGAN (langsung SKIP tanpa pengecualian):
 
 SCORING:
   8 = syarat [1]–[4] semua terpenuhi
-  9 = semua syarat terpenuhi + vol_ratio > 1.2 (ada buying pressure)
+  9 = semua syarat terpenuhi + vol_ratio > 1.2 + lower_shadow_pct > 30 (ada rejection)
   Jika ada 1 syarat yang tidak terpenuhi → SKIP, bukan BUY
 """
 
@@ -80,6 +82,9 @@ DATA KOIN KANDIDAT:
 
 LEGENDA INDIKATOR:
 - rsi          : momentum (< 35 = oversold, > 65 = overbought)
+- rsi_slope    : arah momentum (> 0 artinya mulai naik, < 0 artinya masih turun)
+- body_pct     : seberapa kuat body candle (> 50% berarti dominan/tegas)
+- lower_shadow_pct : penolakan harga bawah (> 30% berarti ada support kuat)
 - stoch_rsi    : momentum cepat (< 15 = sangat oversold)
 - bb_pct       : posisi di BB (0 = lower band, 50 = tengah, 100 = upper band)
 - vol_ratio    : rasio volume vs rata-rata 20 candle (> 1.2 kuat, < 0.8 lesu)

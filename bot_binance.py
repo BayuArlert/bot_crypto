@@ -79,6 +79,21 @@ class BinanceBot:
             return
         pos = self.virtual_portfolio[symbol]
 
+        pos['hold_loops'] = pos.get('hold_loops', 0) + 1
+
+        # --- Trailing Stop Logic ---
+        atr = pos.get('atr', 0)
+        buy_price = pos['buy_price']
+        if not pos.get('trailing_active') and atr > 0:
+            if current_price >= buy_price + (config.TRAILING_ACTIVATE_MULT * atr):
+                new_sl = buy_price + (config.TRAILING_LOCK_MULT * atr)
+                if new_sl > pos['sl_price']:
+                    pos['sl_price'] = new_sl
+                    pos['trailing_active'] = True
+                    msg = f"🛡️ TRAILING STOP {symbol}! SL dipindah ke {new_sl:.4f} (BE+)"
+                    dashboard.add_log(msg)
+                    print(msg)
+
         if current_price >= pos['tp_price']:
             profit = pos['tp_price'] - pos['buy_price']
             profit_usdt = (profit / pos['buy_price']) * config.BUDGET_PER_TRADE_USDT
@@ -100,6 +115,7 @@ class BinanceBot:
                 'time':       datetime.now().strftime('%d/%m %H:%M')
             })
             del self.virtual_portfolio[symbol]
+            return
 
         elif current_price <= pos['sl_price']:
             loss       = pos['buy_price'] - pos['sl_price']
@@ -123,6 +139,35 @@ class BinanceBot:
             })
             del self.virtual_portfolio[symbol]
             self.sl_cooldown[symbol] = self.loop_count
+            return
+            
+        # --- Time-based exit (Stop posisi macet) ---
+        if pos['hold_loops'] > config.MAX_HOLD_LOOPS:
+            profit = current_price - pos['buy_price']
+            profit_usdt = (profit / pos['buy_price']) * config.BUDGET_PER_TRADE_USDT
+            self.virtual_balance += config.BUDGET_PER_TRADE_USDT + profit_usdt
+            
+            tipe_exit = 'TP' if profit > 0 else 'SL'
+            status = 'PROFIT' if profit > 0 else 'RUGI'
+            msg = (f"⏳ TIMEOUT CLOSE {symbol}! Posisi > {config.MAX_HOLD_LOOPS} loop. "
+                   f"Entry: {pos['buy_price']:.4f} → Exit: {current_price:.4f} | "
+                   f"{status}: {'+' if profit>0 else ''}${profit_usdt:.2f} | Saldo: ${self.virtual_balance:.2f}")
+            dashboard.add_log(msg)
+            print(msg)
+
+            self.trade_history.insert(0, {
+                'type':       f"TIME_{tipe_exit}",
+                'symbol':     symbol,
+                'strategy':   pos.get('strategy', '-'),
+                'buy_price':  pos['buy_price'],
+                'exit_price': current_price,
+                'pnl':        round(profit_usdt, 2),
+                'time':       datetime.now().strftime('%d/%m %H:%M')
+            })
+            del self.virtual_portfolio[symbol]
+            if profit <= 0:
+                self.sl_cooldown[symbol] = self.loop_count
+            return
 
         if len(self.trade_history) > 100:
             self.trade_history = self.trade_history[:100]
@@ -156,6 +201,8 @@ class BinanceBot:
             'sl_price':  sl_price,
             'strategy':  strategy_label,
             'atr':       atr,
+            'hold_loops': 0,
+            'trailing_active': False,
         }
 
     # ──────────────────────────────────────────────────────
@@ -164,32 +211,39 @@ class BinanceBot:
     def _filter_bull_candidates(self, market_state: dict) -> dict:
         """
         Strategi BULL: cari koin yang pullback KE EMA20 dalam uptrend.
-        RSI harus di zona pullback KETAT (40-52), bukan mendekati puncak.
-        Harga juga harus benar-benar dekat atau di bawah EMA20.
+        RSI harus di zona pullback KETAT (40-55).
+        Konfirmasi krusial: momentum sudah balik ke atas (RSI Slope > 0)
+        dan candle wajib berwarna hijau (Bullish).
         """
         candidates = {}
         for koin, data in market_state.items():
             # [1] Harus dalam uptrend di 15m
             is_uptrend = data['trend_ema'] == 'Strong Uptrend'
 
-            # [2] RSI zona pullback KETAT (40-52) — bukan mendekati overbought
+            # [2] RSI zona pullback KETAT (40-55) — sedikit dilonggarkan ke atas karena syarat momentum lebih ketat
             rsi = data['rsi']
-            is_pullback = 40 <= rsi <= 52
+            is_pullback = 40 <= rsi <= 55
 
             # [3] Harga harus benar-benar dekat atau di bawah EMA20
-            #     Mencegah bot beli koin yang sudah jauh di atas EMA
             price = data['price']
             ema20 = data.get('ema20', price)
             near_ema = price <= ema20 * config.BULL_EMA_PROXIMITY
 
-            # [4] Volume minimal setara rata-rata (bukan lesu)
+            # [4] Konfirmasi Momentum Naik & Candle Bullish (Baru ditambah)
+            rsi_slope = data.get('rsi_slope', 0)
+            is_momentum_up = rsi_slope > 0  # RSI harus berbalik naik
+
+            candle_color = data.get('candle_color', 'bearish')
+            is_bullish_candle = candle_color == 'bullish' # Candle WAJIB hijau (ada rejection bawah/buying)
+
+            # [5] Volume minimal setara rata-rata
             has_volume = data.get('vol_ratio', 1.0) >= config.MIN_VOL_RATIO
 
-            # [5] Cooldown setelah SL
+            # [6] Cooldown setelah SL
             loops_since_sl = self.loop_count - self.sl_cooldown.get(koin, -999)
             is_on_cooldown = loops_since_sl < config.SL_COOLDOWN_LOOPS
 
-            if is_uptrend and is_pullback and near_ema and has_volume and not is_on_cooldown:
+            if is_uptrend and is_pullback and near_ema and has_volume and is_momentum_up and is_bullish_candle and not is_on_cooldown:
                 # Konfirmasi MTF 1h — harus uptrend atau sideways
                 df_1h = self.get_historical_data(koin, interval=config.MTF_INTERVAL, limit=60)
                 if not df_1h.empty:
@@ -201,16 +255,17 @@ class BinanceBot:
                     else:
                         data['htf_1h_trend'] = htf_trend
                         candidates[koin]     = data
-                        candle_info = data.get('candle_color', '?')
-                        print(f"   [BULL MTF ✅] {koin}: RSI={rsi} | EMA20={ema20:.4f} vs Price={price:.4f} | Candle={candle_info} | 1h={htf_trend} → lolos ke AI")
+                        print(f"   [BULL MTF ✅] {koin}: RSI={rsi} (Slope {rsi_slope}) | EMA20={ema20:.4f} vs Price={price:.4f} | Candle=BULLISH | 1h={htf_trend} → lolos ke AI")
             else:
                 # Log alasan skip agar mudah di-debug
                 skip_reasons = []
-                if not is_uptrend:   skip_reasons.append(f"trend={data['trend_ema']}")
-                if not is_pullback:  skip_reasons.append(f"RSI={rsi} (butuh 40-52)")
-                if not near_ema:     skip_reasons.append(f"price={price:.4f} jauh dari EMA20={ema20:.4f}")
-                if not has_volume:   skip_reasons.append(f"vol={data.get('vol_ratio',0):.2f} (butuh ≥1.0)")
-                if is_on_cooldown:   skip_reasons.append(f"cooldown SL")
+                if not is_uptrend:         skip_reasons.append(f"trend={data['trend_ema']}")
+                if not is_pullback:        skip_reasons.append(f"RSI={rsi} (butuh 40-55)")
+                if not near_ema:           skip_reasons.append(f"price={price:.4f} jauh EMA20={ema20:.4f}")
+                if not is_momentum_up:     skip_reasons.append(f"rsi_slope={rsi_slope} (butuh >0)")
+                if not is_bullish_candle:  skip_reasons.append(f"candle={candle_color} (butuh bullish)")
+                if not has_volume:         skip_reasons.append(f"vol={data.get('vol_ratio',0):.2f} (butuh ≥1.0)")
+                if is_on_cooldown:         skip_reasons.append(f"cooldown SL")
                 print(f"   [BULL SKIP] {koin}: {', '.join(skip_reasons)}")
 
         return candidates

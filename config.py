@@ -54,13 +54,20 @@ RANGE_TP_ATR_MULT = 2.0   # TP = harga_beli + 2.0 × ATR  (naik dari 1.5)
 RANGE_SL_ATR_MULT = 0.8   # SL = harga_beli - 0.8 × ATR  (lebih ketat → RR 2.5:1)
 
 # Regime BULL (Uptrend Kuat) — Trend Following
-# Target 3x lebih besar dari SL → RR = 3.0:1
-BULL_TP_ATR_MULT  = 3.0   # TP = harga_beli + 3.0 × ATR  (naik dari 2.5)
-BULL_SL_ATR_MULT  = 1.0   # SL = harga_beli - 1.0 × ATR  (lebih ketat → RR 3.0:1)
+# Scalping 15m butuh TP yang lebih dekat/realistis agar tidak selalu kena pullback balikan
+BULL_TP_ATR_MULT  = 1.8   # TP = harga_beli + 1.8 × ATR  (diturunkan dari 3.0 agar sering hit)
+BULL_SL_ATR_MULT  = 1.0   # SL = harga_beli - 1.0 × ATR  (RR 1.8:1)
 
 # Fallback persen jika ATR = 0 (sangat jarang)
 FALLBACK_TP_PCT = 0.018   # 1.8%
 FALLBACK_SL_PCT = 0.008   # 0.8%
+
+# ============================================================
+# 4.5. EXIT RULES (TRAILING & TIMEOUT)
+# ============================================================
+MAX_HOLD_LOOPS         = 120   # Keluar paksa (cutloss/take profit seadanya) jika posisi > 2 jam (120 menit)
+TRAILING_ACTIVATE_MULT = 0.8   # Trailing aktif saat untung 0.8 ATR
+TRAILING_LOCK_MULT     = 0.1   # SL dipindah ke +0.1 ATR (Breakeven plus fee)
 
 # ============================================================
 # 5. MARKET REGIME THRESHOLDS

@@ -65,6 +65,7 @@ def get_market_summary(df: pd.DataFrame) -> dict:
     """Ringkasan indikator yang dikirim ke AI — menggunakan candle yang sudah CLOSED"""
     # iloc[-2] = candle yang sudah DITUTUP (closed) → data valid dan terkonfirmasi
     curr = df.iloc[-2]
+    prev = df.iloc[-3]  # candle sebelumnya — untuk menghitung arah momentum
 
     # Analisis Tipe Trend berdasarkan posisi harga vs EMA
     if curr['close'] > curr['ema_20'] and curr['ema_20'] > curr['ema_50']:
@@ -77,21 +78,44 @@ def get_market_summary(df: pd.DataFrame) -> dict:
     # Warna candle yang sudah closed: bullish = close >= open
     candle_color = 'bullish' if curr['close'] >= curr['open'] else 'bearish'
 
+    # RSI Slope: apakah RSI sedang naik (momentum bullish mulai terbentuk)?
+    # Positif = RSI naik (reversal sedang terjadi), Negatif = RSI masih turun
+    rsi_curr = curr['rsi_14'] if not pd.isna(curr['rsi_14']) else 50
+    rsi_prev = prev['rsi_14'] if not pd.isna(prev['rsi_14']) else 50
+    rsi_slope = round(rsi_curr - rsi_prev, 2)
+
+    # Candle Body Strength: seberapa besar body vs total range candle (0-100%)
+    # Tinggi = candle decisive (arah jelas), Rendah = candle doji/ragu-ragu
+    candle_range = curr['high'] - curr['low']
+    candle_body  = abs(curr['close'] - curr['open'])
+    body_pct = round((candle_body / candle_range * 100), 1) if candle_range > 0 else 0
+
+    # Lower Shadow Ratio: seberapa panjang lower wick vs total range (sinyal rejection bawah)
+    lower_shadow = curr['open'] - curr['low'] if curr['close'] >= curr['open'] else curr['close'] - curr['low']
+    lower_shadow_pct = round((lower_shadow / candle_range * 100), 1) if candle_range > 0 else 0
+
     return {
-        'price':        curr['close'],
-        'rsi':          round(curr['rsi_14'],    2) if not pd.isna(curr['rsi_14'])    else 50,
-        'stoch_rsi':    round(curr['stoch_rsi'], 2) if not pd.isna(curr['stoch_rsi']) else 50,
-        'adx':          round(curr['adx_14'],    2) if not pd.isna(curr['adx_14'])    else 0,
-        'trend_ema':    trend,
-        'atr':          round(curr['atr_14'],    6) if not pd.isna(curr['atr_14'])    else 0,
+        'price':            curr['close'],
+        'rsi':              round(rsi_curr, 2),
+        'stoch_rsi':        round(curr['stoch_rsi'], 2) if not pd.isna(curr['stoch_rsi']) else 50,
+        'adx':              round(curr['adx_14'],    2) if not pd.isna(curr['adx_14'])    else 0,
+        'trend_ema':        trend,
+        'atr':              round(curr['atr_14'],    6) if not pd.isna(curr['atr_14'])    else 0,
         # bb_pct: 0=di lower band (oversold), 50=tengah, 100=upper band (overbought)
-        'bb_pct':       round(curr['bb_pct'],    2) if not pd.isna(curr['bb_pct'])    else 50,
+        'bb_pct':           round(curr['bb_pct'],    2) if not pd.isna(curr['bb_pct'])    else 50,
         # vol_ratio: 1.0=normal, >1.5=volume tinggi (sinyal kuat), <0.8=volume lesu
-        'vol_ratio':    round(curr['vol_ratio'], 2) if not pd.isna(curr['vol_ratio']) else 1.0,
+        'vol_ratio':        round(curr['vol_ratio'], 2) if not pd.isna(curr['vol_ratio']) else 1.0,
         # ema20: harga absolut EMA20 — untuk cek apakah harga benar-benar dekat EMA
-        'ema20':        round(curr['ema_20'],    6) if not pd.isna(curr['ema_20'])    else curr['close'],
+        'ema20':            round(curr['ema_20'],    6) if not pd.isna(curr['ema_20'])    else curr['close'],
         # candle_color: konfirmasi arah candle terakhir yang closed
-        'candle_color': candle_color,
+        'candle_color':     candle_color,
+        # rsi_slope: selisih RSI candle ini vs candle sebelumnya
+        # Positif = RSI naik (momentum bullish mulai), Negatif = RSI masih drop
+        'rsi_slope':        rsi_slope,
+        # body_pct: kekuatan candle body (>50% = candle decisive/kuat)
+        'body_pct':         body_pct,
+        # lower_shadow_pct: panjang wick bawah (>30% = ada rejection harga rendah → sinyal reversal)
+        'lower_shadow_pct': lower_shadow_pct,
     }
 
 
