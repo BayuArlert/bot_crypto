@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import config
 
 def hitung_indikator(df: pd.DataFrame) -> pd.DataFrame:
     """Modifikasi khusus Crypto (Sangat bergantung pada Volatilitas dan Oversold ekstrem)"""
@@ -169,7 +170,7 @@ def detect_market_regime(market_state: dict) -> dict:
     # ATURAN PENENTUAN REGIME
     # ==============================================================
     # BEAR: Mayoritas downtrend kuat — bot diam, lindungi modal
-    if downtrend_pct >= 60 and avg_adx >= 35:
+    if downtrend_pct >= config.BEAR_DOWNTREND_THRESHOLD_PCT and avg_adx >= config.BEAR_ADX_THRESHOLD:
         regime      = 'BEAR'
         description = f"🐻 BEAR MARKET — {int(downtrend_pct)}% koin downtrend, ADX rata {avg_adx:.1f}. Bot DIAM lindungi modal."
 

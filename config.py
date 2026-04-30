@@ -73,8 +73,8 @@ TRAILING_LOCK_MULT     = 0.1   # SL dipindah ke +0.1 ATR (Breakeven plus fee)
 # 5. MARKET REGIME THRESHOLDS
 # ============================================================
 # Persentase minimum koin yang downtrend agar dianggap BEAR MARKET
-BEAR_DOWNTREND_THRESHOLD_PCT = 60   # 60% koin harus downtrend
-BEAR_ADX_THRESHOLD           = 35   # Rata-rata ADX harus >= 35
+BEAR_DOWNTREND_THRESHOLD_PCT = 50   # Diturunkan 60→50: 50% koin downtrend sudah cukup bahaya
+BEAR_ADX_THRESHOLD           = 30   # Diturunkan 35→30: ADX 30 sudah menunjukkan downtrend bertenaga
 
 # Persentase minimum koin yang uptrend agar dianggap BULL MARKET
 BULL_UPTREND_THRESHOLD_PCT   = 55   # 55% koin harus uptrend
