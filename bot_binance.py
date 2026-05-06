@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -97,11 +97,14 @@ class BinanceBot:
         if current_price >= pos['tp_price']:
             profit = pos['tp_price'] - pos['buy_price']
             profit_usdt = (profit / pos['buy_price']) * config.BUDGET_PER_TRADE_USDT
-            self.virtual_balance += config.BUDGET_PER_TRADE_USDT + profit_usdt
+            # Kurangi fee round-trip (beli + jual) dari gross profit
+            fee = config.BUDGET_PER_TRADE_USDT * config.TRADING_FEE_PCT * 2
+            profit_usdt_net = profit_usdt - fee
+            self.virtual_balance += config.BUDGET_PER_TRADE_USDT + profit_usdt_net
 
             msg = (f"🎉 TAKE PROFIT {symbol}! "
                    f"Entry: {pos['buy_price']:.4f} → TP: {current_price:.4f} | "
-                   f"Untung: +${profit_usdt:.2f} | Saldo: ${self.virtual_balance:.2f}")
+                   f"Untung: +${profit_usdt_net:.2f} (fee -${fee:.2f}) | Saldo: ${self.virtual_balance:.2f}")
             dashboard.add_log(msg)
             print(msg)
 
@@ -111,7 +114,7 @@ class BinanceBot:
                 'strategy':   pos.get('strategy', '-'),
                 'buy_price':  pos['buy_price'],
                 'exit_price': current_price,
-                'pnl':        round(profit_usdt, 2),
+                'pnl':        round(profit_usdt_net, 2),
                 'time':       datetime.now().strftime('%d/%m %H:%M')
             })
             del self.virtual_portfolio[symbol]
@@ -120,11 +123,14 @@ class BinanceBot:
         elif current_price <= pos['sl_price']:
             loss       = pos['buy_price'] - pos['sl_price']
             loss_usdt  = (loss / pos['buy_price']) * config.BUDGET_PER_TRADE_USDT
-            self.virtual_balance += config.BUDGET_PER_TRADE_USDT - loss_usdt
+            # Tambahkan fee ke total kerugian (bayar fee meski SL)
+            fee = config.BUDGET_PER_TRADE_USDT * config.TRADING_FEE_PCT * 2
+            loss_usdt_net = loss_usdt + fee
+            self.virtual_balance += config.BUDGET_PER_TRADE_USDT - loss_usdt_net
 
             msg = (f"💔 CUT LOSS {symbol}! "
                    f"Entry: {pos['buy_price']:.4f} → SL: {current_price:.4f} | "
-                   f"Rugi: -${loss_usdt:.2f} | Saldo: ${self.virtual_balance:.2f}")
+                   f"Rugi: -${loss_usdt_net:.2f} (fee -${fee:.2f}) | Saldo: ${self.virtual_balance:.2f}")
             dashboard.add_log(msg)
             print(msg)
 
@@ -134,7 +140,7 @@ class BinanceBot:
                 'strategy':   pos.get('strategy', '-'),
                 'buy_price':  pos['buy_price'],
                 'exit_price': current_price,
-                'pnl':        round(-loss_usdt, 2),
+                'pnl':        round(-loss_usdt_net, 2),
                 'time':       datetime.now().strftime('%d/%m %H:%M')
             })
             del self.virtual_portfolio[symbol]
@@ -145,13 +151,16 @@ class BinanceBot:
         if pos['hold_loops'] > config.MAX_HOLD_LOOPS:
             profit = current_price - pos['buy_price']
             profit_usdt = (profit / pos['buy_price']) * config.BUDGET_PER_TRADE_USDT
-            self.virtual_balance += config.BUDGET_PER_TRADE_USDT + profit_usdt
-            
-            tipe_exit = 'TP' if profit > 0 else 'SL'
-            status = 'PROFIT' if profit > 0 else 'RUGI'
+            # Fee tetap dikenakan saat timeout close
+            fee = config.BUDGET_PER_TRADE_USDT * config.TRADING_FEE_PCT * 2
+            profit_usdt_net = profit_usdt - fee
+            self.virtual_balance += config.BUDGET_PER_TRADE_USDT + profit_usdt_net
+
+            tipe_exit = 'TP' if profit_usdt_net > 0 else 'SL'
+            status = 'PROFIT' if profit_usdt_net > 0 else 'RUGI'
             msg = (f"⏳ TIMEOUT CLOSE {symbol}! Posisi > {config.MAX_HOLD_LOOPS} loop. "
                    f"Entry: {pos['buy_price']:.4f} → Exit: {current_price:.4f} | "
-                   f"{status}: {'+' if profit>0 else ''}${profit_usdt:.2f} | Saldo: ${self.virtual_balance:.2f}")
+                   f"{status}: {'+' if profit_usdt_net>0 else ''}${profit_usdt_net:.2f} (fee -${fee:.2f}) | Saldo: ${self.virtual_balance:.2f}")
             dashboard.add_log(msg)
             print(msg)
 
@@ -161,11 +170,11 @@ class BinanceBot:
                 'strategy':   pos.get('strategy', '-'),
                 'buy_price':  pos['buy_price'],
                 'exit_price': current_price,
-                'pnl':        round(profit_usdt, 2),
+                'pnl':        round(profit_usdt_net, 2),
                 'time':       datetime.now().strftime('%d/%m %H:%M')
             })
             del self.virtual_portfolio[symbol]
-            if profit <= 0:
+            if profit_usdt_net <= 0:
                 self.sl_cooldown[symbol] = self.loop_count
             return
 
@@ -229,21 +238,24 @@ class BinanceBot:
             ema20 = data.get('ema20', price)
             near_ema = price <= ema20 * config.BULL_EMA_PROXIMITY
 
-            # [4] Konfirmasi Momentum Naik & Candle Bullish (Baru ditambah)
+            # [4] Konfirmasi Momentum Naik & Candle Bullish
             rsi_slope = data.get('rsi_slope', 0)
             is_momentum_up = rsi_slope > 0  # RSI harus berbalik naik
 
             candle_color = data.get('candle_color', 'bearish')
-            is_bullish_candle = candle_color == 'bullish' # Candle WAJIB hijau (ada rejection bawah/buying)
+            is_bullish_candle = candle_color == 'bullish'  # Candle WAJIB hijau
 
             # [5] Volume minimal setara rata-rata
             has_volume = data.get('vol_ratio', 1.0) >= config.MIN_VOL_RATIO
 
-            # [6] Cooldown setelah SL
+            # [6] MACD Histogram positif — konfirmasi momentum bullish
+            is_macd_bullish = data.get('macd_hist', 0) > 0
+
+            # [7] Cooldown setelah SL
             loops_since_sl = self.loop_count - self.sl_cooldown.get(koin, -999)
             is_on_cooldown = loops_since_sl < config.SL_COOLDOWN_LOOPS
 
-            if is_uptrend and is_pullback and near_ema and has_volume and is_momentum_up and is_bullish_candle and not is_on_cooldown:
+            if is_uptrend and is_pullback and near_ema and has_volume and is_momentum_up and is_bullish_candle and is_macd_bullish and not is_on_cooldown:
                 # Konfirmasi MTF 1h — harus uptrend atau sideways
                 df_1h = self.get_historical_data(koin, interval=config.MTF_INTERVAL, limit=60)
                 if not df_1h.empty:
@@ -251,11 +263,21 @@ class BinanceBot:
                     htf       = get_market_summary(df_1h)
                     htf_trend = htf['trend_ema']
                     if htf_trend == 'Strong Downtrend':
-                        print(f"   [BULL MTF ❌] {koin}: 1h={htf_trend} — skip")
+                        print(f"   [BULL 1H ❌] {koin}: 1h={htf_trend} — skip")
                     else:
-                        data['htf_1h_trend'] = htf_trend
-                        candidates[koin]     = data
-                        print(f"   [BULL MTF ✅] {koin}: RSI={rsi} (Slope {rsi_slope}) | EMA20={ema20:.4f} vs Price={price:.4f} | Candle=BULLISH | 1h={htf_trend} → lolos ke AI")
+                        # Konfirmasi MTF 4h — filter tren besar
+                        df_4h = self.get_historical_data(koin, interval='4h', limit=20)
+                        if not df_4h.empty:
+                            df_4h     = hitung_indikator(df_4h)
+                            htf4      = get_market_summary(df_4h)
+                            htf4_trend = htf4['trend_ema']
+                            if htf4_trend == 'Strong Downtrend':
+                                print(f"   [BULL 4H ❌] {koin}: 4h={htf4_trend} — skip meski 1h/15m oke")
+                            else:
+                                data['htf_1h_trend'] = htf_trend
+                                data['htf_4h_trend'] = htf4_trend
+                                candidates[koin]     = data
+                                print(f"   [BULL ✅] {koin}: RSI={rsi}(slope {rsi_slope}) | EMA20={ema20:.4f} | MACD_hist={data.get('macd_hist',0):.5f} | 1h={htf_trend} | 4h={htf4_trend} → ke AI")
             else:
                 # Log alasan skip agar mudah di-debug
                 skip_reasons = []
@@ -265,6 +287,7 @@ class BinanceBot:
                 if not is_momentum_up:     skip_reasons.append(f"rsi_slope={rsi_slope} (butuh >0)")
                 if not is_bullish_candle:  skip_reasons.append(f"candle={candle_color} (butuh bullish)")
                 if not has_volume:         skip_reasons.append(f"vol={data.get('vol_ratio',0):.2f} (butuh ≥1.0)")
+                if not is_macd_bullish:    skip_reasons.append(f"macd_hist={data.get('macd_hist',0):.5f} (butuh >0)")
                 if is_on_cooldown:         skip_reasons.append(f"cooldown SL")
                 print(f"   [BULL SKIP] {koin}: {', '.join(skip_reasons)}")
 
@@ -309,12 +332,22 @@ class BinanceBot:
                     htf       = get_market_summary(df_1h)
                     htf_trend = htf['trend_ema']
                     if htf_trend == 'Strong Downtrend':
-                        print(f"   [RANGE MTF ❌] {koin}: 1h={htf_trend} — skip meski 15m oversold")
+                        print(f"   [RANGE 1H ❌] {koin}: 1h={htf_trend} — skip meski 15m oversold")
                     else:
-                        data['htf_1h_trend'] = htf_trend
-                        candidates[koin]     = data
-                        candle_info = data.get('candle_color', '?')
-                        print(f"   [RANGE MTF ✅] {koin}: RSI={rsi} | StochRSI={stoch_rsi} | BB={bb_pct:.1f}% | Candle={candle_info} | 1h={htf_trend} → lolos ke AI")
+                        # Konfirmasi MTF 4h — pastikan tidak lawan tren besar
+                        df_4h = self.get_historical_data(koin, interval='4h', limit=20)
+                        if not df_4h.empty:
+                            df_4h     = hitung_indikator(df_4h)
+                            htf4      = get_market_summary(df_4h)
+                            htf4_trend = htf4['trend_ema']
+                            if htf4_trend == 'Strong Downtrend':
+                                print(f"   [RANGE 4H ❌] {koin}: 4h={htf4_trend} — skip meski 15m/1h oke")
+                            else:
+                                data['htf_1h_trend'] = htf_trend
+                                data['htf_4h_trend'] = htf4_trend
+                                candidates[koin]     = data
+                                candle_info = data.get('candle_color', '?')
+                                print(f"   [RANGE ✅] {koin}: RSI={rsi} | StochRSI={stoch_rsi} | BB={bb_pct:.1f}% | Candle={candle_info} | 1h={htf_trend} | 4h={htf4_trend} → ke AI")
             else:
                 skip_reasons = []
                 if not is_oversold:       skip_reasons.append(f"RSI={rsi} StochRSI={stoch_rsi} (belum oversold)")
@@ -334,6 +367,16 @@ class BinanceBot:
         dashboard.add_log("🚀 Adaptive Multi-Regime Bot Aktif! (BEAR/BULL/RANGE Auto-Switch)")
 
         while True:
+            # ── 0. Skip jam sepi low-liquidity (00:00–06:00 UTC = 07:00–13:00 WIB) ──
+            hour_utc = datetime.now(timezone.utc).hour
+            if 0 <= hour_utc < 6:
+                msg = (f"🌙 JAM SEPI ({hour_utc:02d}:xx UTC / {(hour_utc+7)%24:02d}:xx WIB) — "
+                       f"Likuiditas rendah, sinyal rawan palsu. Bot tidur 30 menit...")
+                dashboard.add_log(msg)
+                print(f"\n{msg}\n")
+                time.sleep(1800)
+                continue
+
             self.loop_count += 1
             market_state = {}
             radar_list   = []

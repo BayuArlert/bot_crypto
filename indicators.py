@@ -59,6 +59,15 @@ def hitung_indikator(df: pd.DataFrame) -> pd.DataFrame:
     df['vol_ma_20'] = df['volume'].rolling(20).mean()
     df['vol_ratio'] = df['volume'] / df['vol_ma_20'].replace(0, np.nan)
 
+    # MACD (12/26/9) — konfirmasi momentum crossover
+    # macd_hist > 0 = momentum bullish sedang terbentuk
+    # macd_hist < 0 = momentum bearish / pelemahan
+    ema12              = df['close'].ewm(span=12, adjust=False).mean()
+    ema26              = df['close'].ewm(span=26, adjust=False).mean()
+    df['macd']         = ema12 - ema26
+    df['macd_signal']  = df['macd'].ewm(span=9, adjust=False).mean()
+    df['macd_hist']    = df['macd'] - df['macd_signal']
+
     return df
 
 
@@ -117,6 +126,8 @@ def get_market_summary(df: pd.DataFrame) -> dict:
         'body_pct':         body_pct,
         # lower_shadow_pct: panjang wick bawah (>30% = ada rejection harga rendah → sinyal reversal)
         'lower_shadow_pct': lower_shadow_pct,
+        # macd_hist: histogram MACD (>0 = momentum bullish, <0 = momentum bearish)
+        'macd_hist':        round(curr['macd_hist'], 6) if not pd.isna(curr['macd_hist']) else 0,
     }
 
 
