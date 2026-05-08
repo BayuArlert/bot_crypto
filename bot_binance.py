@@ -223,17 +223,18 @@ class BinanceBot:
         RSI harus di zona pullback KETAT (40-55).
         Konfirmasi krusial: momentum sudah balik ke atas (RSI Slope > 0)
         dan candle wajib berwarna hijau (Bullish).
+        EMA proximity diperketat: max 0.5% di atas EMA20 (bukan 0.8%).
         """
         candidates = {}
         for koin, data in market_state.items():
             # [1] Harus dalam uptrend di 15m
             is_uptrend = data['trend_ema'] == 'Strong Uptrend'
 
-            # [2] RSI zona pullback KETAT (40-55) — sedikit dilonggarkan ke atas karena syarat momentum lebih ketat
+            # [2] RSI zona pullback KETAT (40-55)
             rsi = data['rsi']
             is_pullback = 40 <= rsi <= 55
 
-            # [3] Harga harus benar-benar dekat atau di bawah EMA20
+            # [3] Harga harus benar-benar dekat atau di bawah EMA20 (max 0.5% di atas)
             price = data['price']
             ema20 = data.get('ema20', price)
             near_ema = price <= ema20 * config.BULL_EMA_PROXIMITY
@@ -245,17 +246,20 @@ class BinanceBot:
             candle_color = data.get('candle_color', 'bearish')
             is_bullish_candle = candle_color == 'bullish'  # Candle WAJIB hijau
 
-            # [5] Volume minimal setara rata-rata
+            # [5] Volume harus lebih dari rata-rata (sinyal beli lebih meyakinkan)
             has_volume = data.get('vol_ratio', 1.0) >= config.MIN_VOL_RATIO
 
             # [6] MACD Histogram positif — konfirmasi momentum bullish
             is_macd_bullish = data.get('macd_hist', 0) > 0
 
-            # [7] Cooldown setelah SL
+            # [7] ADX > 20 — tren harus punya tenaga (hindari sinyal palsu sideways)
+            has_adx_strength = data.get('adx', 0) > 20
+
+            # [8] Cooldown setelah SL
             loops_since_sl = self.loop_count - self.sl_cooldown.get(koin, -999)
             is_on_cooldown = loops_since_sl < config.SL_COOLDOWN_LOOPS
 
-            if is_uptrend and is_pullback and near_ema and has_volume and is_momentum_up and is_bullish_candle and is_macd_bullish and not is_on_cooldown:
+            if is_uptrend and is_pullback and near_ema and has_volume and is_momentum_up and is_bullish_candle and is_macd_bullish and has_adx_strength and not is_on_cooldown:
                 # Konfirmasi MTF 1h — harus uptrend atau sideways
                 df_1h = self.get_historical_data(koin, interval=config.MTF_INTERVAL, limit=60)
                 if not df_1h.empty:
@@ -283,11 +287,12 @@ class BinanceBot:
                 skip_reasons = []
                 if not is_uptrend:         skip_reasons.append(f"trend={data['trend_ema']}")
                 if not is_pullback:        skip_reasons.append(f"RSI={rsi} (butuh 40-55)")
-                if not near_ema:           skip_reasons.append(f"price={price:.4f} jauh EMA20={ema20:.4f}")
+                if not near_ema:           skip_reasons.append(f"price={price:.4f} jauh EMA20={ema20:.4f} (max {config.BULL_EMA_PROXIMITY}x)")
                 if not is_momentum_up:     skip_reasons.append(f"rsi_slope={rsi_slope} (butuh >0)")
                 if not is_bullish_candle:  skip_reasons.append(f"candle={candle_color} (butuh bullish)")
-                if not has_volume:         skip_reasons.append(f"vol={data.get('vol_ratio',0):.2f} (butuh ≥1.0)")
+                if not has_volume:         skip_reasons.append(f"vol={data.get('vol_ratio',0):.2f} (butuh ≥{config.MIN_VOL_RATIO})")
                 if not is_macd_bullish:    skip_reasons.append(f"macd_hist={data.get('macd_hist',0):.5f} (butuh >0)")
+                if not has_adx_strength:   skip_reasons.append(f"adx={data.get('adx',0):.1f} (butuh >20)")
                 if is_on_cooldown:         skip_reasons.append(f"cooldown SL")
                 print(f"   [BULL SKIP] {koin}: {', '.join(skip_reasons)}")
 
@@ -299,32 +304,57 @@ class BinanceBot:
     def _filter_range_candidates(self, market_state: dict) -> dict:
         """
         Strategi RANGE: cari koin oversold ekstrem dekat lower Bollinger Band.
-        Filter diperketat: volume harus ada, candle bullish jadi poin plus.
+        DIPERKETAT:
+        - Oversold harus KEDUANYA: RSI < 38 DAN stoch_rsi < 25 (bukan OR)
+        - candle_color WAJIB bullish (reversal harus sudah mulai, jangan beli saat masih turun)
+        - rsi_slope WAJIB > 0 (momentum sudah berbalik naik — konfirmasi bottom)
+        - lower_shadow_pct > 10 (harus ada rejection/wick bawah — bukti ada pembeli di zona bawah)
+        - ADX < 35 (downtrend tidak boleh terlalu kuat, pasar harus truly sideways)
         """
         candidates = {}
         for koin, data in market_state.items():
-            rsi       = data['rsi']
-            stoch_rsi = data['stoch_rsi']
-            bb_pct    = data.get('bb_pct', 50)
-            vol_ratio = data.get('vol_ratio', 1.0)
+            rsi              = data['rsi']
+            stoch_rsi        = data['stoch_rsi']
+            bb_pct           = data.get('bb_pct', 50)
+            vol_ratio        = data.get('vol_ratio', 1.0)
+            candle_color     = data.get('candle_color', 'bearish')
+            rsi_slope        = data.get('rsi_slope', 0)
+            lower_shadow_pct = data.get('lower_shadow_pct', 0)
+            adx              = data.get('adx', 0)
 
-            # [1] Oversold: RSI < 35 ATAU stoch_rsi sangat rendah
-            is_oversold    = rsi < 35 or stoch_rsi < 15
+            # [1] Oversold KEDUANYA wajib (AND, bukan OR) — lebih ketat dari sebelumnya
+            is_oversold = rsi < 38 and stoch_rsi < 25
 
-            # [2] Blok downtrend kuat
-            is_dangerous   = (data['trend_ema'] == 'Strong Downtrend' and data['adx'] > 35)
+            # [2] Candle WAJIB bullish — jangan beli saat candle masih merah (pisau jatuh!)
+            is_bullish_candle = candle_color == 'bullish'
 
-            # [3] Volume setara rata-rata (bukan lesu) — naik dari 0.8 ke 1.0
-            has_volume     = vol_ratio >= config.MIN_VOL_RATIO
+            # [3] Momentum WAJIB sudah berbalik naik — RSI slope positif
+            is_momentum_up = rsi_slope > 0
 
-            # [4] Harga harus benar-benar di dekat lower band (30, lebih ketat dari 35)
+            # [4] Harus ada lower shadow / wick bawah (bukti rejection / pembeli ada)
+            has_rejection = lower_shadow_pct > 10
+
+            # [5] Blok downtrend kuat — ADX terlalu tinggi = tren masih kuat, bukan ranging
+            is_dangerous = (data['trend_ema'] == 'Strong Downtrend' and adx > 30)
+
+            # [6] ADX tidak boleh terlalu tinggi (pasar harus cenderung sideways)
+            is_ranging = adx < 35
+
+            # [7] Volume setara rata-rata (bukan lesu)
+            has_volume = vol_ratio >= config.MIN_VOL_RATIO
+
+            # [8] Harga harus benar-benar di dekat lower band
             near_lower_band = bb_pct < config.BB_PCT_THRESHOLD
 
-            # [5] Cooldown setelah SL
+            # [9] Cooldown setelah SL
             loops_since_sl = self.loop_count - self.sl_cooldown.get(koin, -999)
             is_on_cooldown = loops_since_sl < config.SL_COOLDOWN_LOOPS
 
-            if is_oversold and not is_dangerous and has_volume and near_lower_band and not is_on_cooldown:
+            all_pass = (is_oversold and is_bullish_candle and is_momentum_up and
+                        has_rejection and not is_dangerous and is_ranging and
+                        has_volume and near_lower_band and not is_on_cooldown)
+
+            if all_pass:
                 # Konfirmasi MTF 1h
                 df_1h = self.get_historical_data(koin, interval=config.MTF_INTERVAL, limit=60)
                 if not df_1h.empty:
@@ -337,8 +367,8 @@ class BinanceBot:
                         # Konfirmasi MTF 4h — pastikan tidak lawan tren besar
                         df_4h = self.get_historical_data(koin, interval='4h', limit=20)
                         if not df_4h.empty:
-                            df_4h     = hitung_indikator(df_4h)
-                            htf4      = get_market_summary(df_4h)
+                            df_4h      = hitung_indikator(df_4h)
+                            htf4       = get_market_summary(df_4h)
                             htf4_trend = htf4['trend_ema']
                             if htf4_trend == 'Strong Downtrend':
                                 print(f"   [RANGE 4H ❌] {koin}: 4h={htf4_trend} — skip meski 15m/1h oke")
@@ -346,13 +376,16 @@ class BinanceBot:
                                 data['htf_1h_trend'] = htf_trend
                                 data['htf_4h_trend'] = htf4_trend
                                 candidates[koin]     = data
-                                candle_info = data.get('candle_color', '?')
-                                print(f"   [RANGE ✅] {koin}: RSI={rsi} | StochRSI={stoch_rsi} | BB={bb_pct:.1f}% | Candle={candle_info} | 1h={htf_trend} | 4h={htf4_trend} → ke AI")
+                                print(f"   [RANGE ✅] {koin}: RSI={rsi} | Stoch={stoch_rsi} | BB={bb_pct:.1f}% | slope={rsi_slope} | shadow={lower_shadow_pct}% | Candle={candle_color} | 1h={htf_trend} | 4h={htf4_trend} → ke AI")
             else:
                 skip_reasons = []
-                if not is_oversold:       skip_reasons.append(f"RSI={rsi} StochRSI={stoch_rsi} (belum oversold)")
-                if is_dangerous:          skip_reasons.append(f"downtrend kuat ADX={data['adx']}")
-                if not has_volume:        skip_reasons.append(f"vol={vol_ratio:.2f} (butuh ≥1.0)")
+                if not is_oversold:       skip_reasons.append(f"RSI={rsi}(butuh<38) StochRSI={stoch_rsi}(butuh<25) — HARUS keduanya")
+                if not is_bullish_candle: skip_reasons.append(f"candle={candle_color} (WAJIB bullish — jangan beli saat merah!)")
+                if not is_momentum_up:    skip_reasons.append(f"rsi_slope={rsi_slope} (WAJIB >0 — momentum belum berbalik)")
+                if not has_rejection:     skip_reasons.append(f"lower_shadow={lower_shadow_pct}% (butuh >10% — belum ada rejection)")
+                if is_dangerous:          skip_reasons.append(f"downtrend kuat ADX={adx}")
+                if not is_ranging:        skip_reasons.append(f"ADX={adx} (butuh <35, tren terlalu kuat untuk bounce)")
+                if not has_volume:        skip_reasons.append(f"vol={vol_ratio:.2f} (butuh ≥{config.MIN_VOL_RATIO})")
                 if not near_lower_band:   skip_reasons.append(f"bb_pct={bb_pct:.1f} (butuh <{config.BB_PCT_THRESHOLD})")
                 if is_on_cooldown:        skip_reasons.append("cooldown SL")
                 print(f"   [RANGE SKIP] {koin}: {', '.join(skip_reasons)}")
