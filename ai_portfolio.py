@@ -287,10 +287,11 @@ Atau: {{"decisions":[{{"symbol":"{sym}","decision":"SKIP","confidence":0,"reason
         if skip_decisions:
             reason = skip_decisions[0].get('reason', '?')
             print(f"   [AI SKIP] {sym}: {reason}")
+            print(f"   [DEBUG SCORE] {sym}: raw={score}, rounded={round(score)}, override_threshold=9")
             # Jika skor sangat tinggi (>=9), override AI yang ragu
             if score >= 9:
                 print(f"   [OVERRIDE] Skor {score}/10 terlalu tinggi, override AI SKIP → BUY")
-                return [{'symbol': sym, 'decision': 'BUY', 'confidence': score,
+                return [{'symbol': sym, 'decision': 'BUY', 'confidence': round(score),
                          'reason': f"[HIGH SCORE OVERRIDE] {candidate['reason']}"}]
             return []  # AI SKIP + skor normal → ikuti AI
 

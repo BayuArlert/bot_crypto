@@ -388,7 +388,7 @@ sse.onmessage = e => {
       `<tr>
         <td data-label="Waktu" style="color:var(--sub);font-size:10px">${t.time}</td>
         <td data-label="Koin" style="font-weight:700">${t.symbol.replace('USDT','')}</td>
-        <td data-label="Hasil"><span class="bdg ${t.type==='TP'?'bdg-g':'bdg-r'}">${t.type}</span></td>
+        <td data-label="Hasil"><span class="bdg ${t.type.includes('TP')?'bdg-g':'bdg-r'}">${t.type.replace('TIME_', 'T-').replace('BEAR_', 'B-')}</span></td>
         <td data-label="Strategi"><span class="bdg bdg-b" style="font-size:9px">${t.strategy||'-'}</span></td>
         <td data-label="Entry">$${t.buy_price.toFixed(4)}</td>
         <td data-label="Exit">$${t.exit_price.toFixed(4)}</td>

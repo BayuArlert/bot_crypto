@@ -108,9 +108,11 @@ def get_market_summary(df: pd.DataFrame) -> dict:
         'price':            curr['close'],
         'rsi':              round(rsi_curr, 2),
         'stoch_rsi':        round(curr['stoch_rsi'], 2) if not pd.isna(curr['stoch_rsi']) else 50,
+        'stoch_rsi_valid':  not pd.isna(curr['stoch_rsi']),
         'adx':              round(curr['adx_14'],    2) if not pd.isna(curr['adx_14'])    else 0,
         'trend_ema':        trend,
         'atr':              round(curr['atr_14'],    6) if not pd.isna(curr['atr_14'])    else 0,
+        'atr_valid':        not pd.isna(curr['atr_14']) and curr['atr_14'] > 0,
         # bb_pct: 0=di lower band (oversold), 50=tengah, 100=upper band (overbought)
         'bb_pct':           round(curr['bb_pct'],    2) if not pd.isna(curr['bb_pct'])    else 50,
         # vol_ratio: 1.0=normal, >1.5=volume tinggi (sinyal kuat), <0.8=volume lesu
