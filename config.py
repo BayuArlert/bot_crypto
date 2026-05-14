@@ -27,6 +27,11 @@ SYMBOL_LIST = [
     'DOGEUSDT', # Dogecoin
 ]
 
+# Dynamic symbol list — top koin by volume
+USE_DYNAMIC_SYMBOLS   = True   # True = pakai top N koin by volume, False = pakai SYMBOL_LIST
+TOP_N_SYMBOLS         = 30     # Ambil top 30 koin berdasarkan volume 24h
+SYMBOL_REFRESH_HOURS  = 24     # Refresh daftar koin setiap 24 jam
+
 TIMEFRAME   = "15m"
 MTF_INTERVAL = "1h"
 

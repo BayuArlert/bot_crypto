@@ -21,6 +21,8 @@ class BinanceBot:
         self.loop_count        = 0
         self.trade_history     = []
         self._precision_cache  = {}
+        self.active_symbols    = config.SYMBOL_LIST
+        self.last_symbol_refresh = None
 
     def _get_precision(self, symbol):
         """Membaca presisi desimal koin dari Binance agar tidak ditolak"""
@@ -37,6 +39,58 @@ class BinanceBot:
         precision = int(round(-math.log(step_size, 10), 0))
         self._precision_cache[symbol] = precision
         return precision
+
+    def get_top_symbols_by_volume(self, top_n: int = None) -> list[str]:
+        """
+        Ambil top N koin pasangan USDT berdasarkan quoteVolume 24h tertinggi.
+        Filter otomatis:
+        - Hanya pasangan USDT
+        - Exclude leveraged token (UP, DOWN, BULL, BEAR)
+        - Exclude stablecoin (BUSD, USDC, TUSD, USDP, DAI, FDUSD)
+        - Hanya koin dengan volume > 0
+        Fallback ke config.SYMBOL_LIST jika fetch gagal.
+        """
+        if top_n is None:
+            top_n = config.TOP_N_SYMBOLS
+        try:
+            tickers = self.client.get_ticker()
+            
+            # Daftar kata kunci yang harus dieksklusi
+            leveraged_suffixes = ['UPUSDT', 'DOWNUSDT', 'BULLUSDT', 'BEARUSDT']
+            stablecoin_keywords = ['BUSD', 'USDC', 'TUSD', 'USDP', 'DAIUSDT', 'FDUSD']
+            
+            usdt_pairs = [
+                t for t in tickers
+                if t['symbol'].endswith('USDT')
+                and float(t['quoteVolume']) > 0
+                and not any(t['symbol'].endswith(sfx) for sfx in leveraged_suffixes)
+                and not any(kw in t['symbol'] for kw in stablecoin_keywords)
+            ]
+            
+            # Sort by quoteVolume (volume dalam USDT, lebih representatif dari volume base)
+            sorted_pairs = sorted(usdt_pairs, key=lambda x: float(x['quoteVolume']), reverse=True)
+            symbols = [t['symbol'] for t in sorted_pairs[:top_n]]
+            
+            msg = f"📊 Dynamic symbols updated: top {len(symbols)} koin by volume 24h"
+            dashboard.add_log(msg)
+            print(f"\n{msg}")
+            print(f"   {', '.join(symbols)}\n")
+            
+            return symbols
+            
+        except Exception as e:
+            print(f"⚠️ Gagal fetch dynamic symbols ({e}) → fallback ke config.SYMBOL_LIST")
+            dashboard.add_log(f"⚠️ Dynamic symbols gagal → pakai SYMBOL_LIST default")
+            return config.SYMBOL_LIST
+
+    def _should_refresh_symbols(self) -> bool:
+        """Cek apakah sudah waktunya refresh daftar simbol"""
+        if not config.USE_DYNAMIC_SYMBOLS:
+            return False
+        if self.last_symbol_refresh is None:
+            return True
+        elapsed_hours = (datetime.now(timezone.utc) - self.last_symbol_refresh).total_seconds() / 3600
+        return elapsed_hours >= config.SYMBOL_REFRESH_HOURS
 
     def get_historical_data(self, symbol, interval=None, limit=100) -> pd.DataFrame:
         if interval is None:
@@ -450,6 +504,20 @@ class BinanceBot:
                 continue
 
             self.loop_count += 1
+            
+            # ── Refresh dynamic symbol list jika sudah waktunya ──
+            if self._should_refresh_symbols():
+                new_symbols = self.get_top_symbols_by_volume()
+                
+                # Tambahkan koin yang sedang di-hold ke daftar baru jika belum ada
+                for held_sym in self.virtual_portfolio.keys():
+                    if held_sym not in new_symbols:
+                        new_symbols.append(held_sym)
+                        print(f"   [SYMBOL GUARD] {held_sym} ditambahkan ke active_symbols karena sedang di-hold")
+                
+                self.active_symbols = new_symbols
+                self.last_symbol_refresh = datetime.now(timezone.utc)
+                
             market_state = {}
             market_state_1h = {}
             market_state_4h = {}
@@ -459,7 +527,7 @@ class BinanceBot:
 
             # ── 1. Kumpulkan data semua koin ──
             with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(self._fetch_symbol_data, sym): sym for sym in config.SYMBOL_LIST}
+                futures = {executor.submit(self._fetch_symbol_data, sym): sym for sym in self.active_symbols}
                 for future in as_completed(futures):
                     try:
                         sym, df_15m, df_1h, df_4h = future.result()
