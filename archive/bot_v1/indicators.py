@@ -133,7 +133,7 @@ def get_market_summary(df: pd.DataFrame) -> dict:
     }
 
 
-def detect_market_regime(market_state: dict) -> dict:
+def detect_market_regime(market_state: dict, data_1h: dict = None) -> dict:
     """
     Menganalisis semua koin secara kolektif untuk menentukan kondisi pasar global.
     
@@ -174,10 +174,16 @@ def detect_market_regime(market_state: dict) -> dict:
         adx_vals.append(adx)
         rsi_vals.append(rsi)
 
+    if data_1h:
+        adx_1h_vals = [d.get('adx', 0) for d in data_1h.values() if d.get('adx', 0) > 0]
+        if adx_1h_vals:
+            avg_adx = sum(adx_1h_vals) / len(adx_1h_vals)
+    else:
+        avg_adx = sum(adx_vals) / len(adx_vals) if adx_vals else 0
+
     uptrend_pct   = (uptrend_cnt / total) * 100
     downtrend_pct = (down_cnt / total) * 100
-    avg_adx       = sum(adx_vals) / len(adx_vals)
-    avg_rsi       = sum(rsi_vals) / len(rsi_vals)
+    avg_rsi       = sum(rsi_vals) / len(rsi_vals) if rsi_vals else 50
 
     # ==============================================================
     # ATURAN PENENTUAN REGIME
@@ -188,7 +194,7 @@ def detect_market_regime(market_state: dict) -> dict:
         description = f"🐻 BEAR MARKET — {int(downtrend_pct)}% koin downtrend, ADX rata {avg_adx:.1f}. Bot DIAM lindungi modal."
 
     # BULL: Mayoritas uptrend — strategi trend following (pullback ke EMA)
-    elif uptrend_pct >= 55:
+    elif uptrend_pct >= config.BULL_UPTREND_THRESHOLD_PCT:
         regime      = 'BULL'
         description = f"🐂 BULL MARKET — {int(uptrend_pct)}% koin uptrend. Bot cari entry pullback ke EMA."
 

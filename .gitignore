@@ -1,4 +1,10 @@
 .env
+bot_crypto_v2/.env
+bot_crypto_v2/bot_state_v2.json
+bot_crypto_v2/bot_state_v2.json.tmp
+archive/bot_v1/.env
+archive/bot_v1/bot_state.json
+archive/bot_v1/bot_state.json.tmp
 .venv/
 vnev/
 env/

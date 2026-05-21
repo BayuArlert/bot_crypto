@@ -9,6 +9,9 @@ from indicators import hitung_indikator, get_market_summary, detect_market_regim
 from ai_portfolio import AIPortfolioManager
 import math
 import dashboard
+import analytics
+import notifier
+from state_manager import save_state, load_state
 
 
 class BinanceBot:
@@ -23,6 +26,14 @@ class BinanceBot:
         self._precision_cache  = {}
         self.active_symbols    = config.SYMBOL_LIST
         self.last_symbol_refresh = None
+        self.last_1h_refresh   = None
+        self.last_4h_refresh   = None
+        self.market_state_1h   = {}
+        self.market_state_4h   = {}
+        self.last_regime       = None
+
+        # Load state tersimpan jika ada
+        load_state(self)
 
     def _get_precision(self, symbol):
         """Membaca presisi desimal koin dari Binance agar tidak ditolak"""
@@ -92,6 +103,25 @@ class BinanceBot:
         elapsed_hours = (datetime.now(timezone.utc) - self.last_symbol_refresh).total_seconds() / 3600
         return elapsed_hours >= config.SYMBOL_REFRESH_HOURS
 
+    def _need_htf_refresh(self) -> tuple[bool, bool]:
+        """
+        Cek apakah data 1h dan 4h perlu di-refresh.
+        1h  → refresh setiap 60 menit
+        4h  → refresh setiap 4 jam
+        Returns: (need_1h, need_4h)
+        """
+        now = datetime.now(timezone.utc)
+        
+        need_1h = (
+            self.last_1h_refresh is None or
+            (now - self.last_1h_refresh).total_seconds() >= 3600
+        )
+        need_4h = (
+            self.last_4h_refresh is None or
+            (now - self.last_4h_refresh).total_seconds() >= 14400
+        )
+        return need_1h, need_4h
+
     def get_historical_data(self, symbol, interval=None, limit=100) -> pd.DataFrame:
         if interval is None:
             interval = config.TIMEFRAME
@@ -113,11 +143,11 @@ class BinanceBot:
                 print(f"⚠️ Gagal menarik candle Binance untuk {symbol} setelah 3x: {e}")
                 return pd.DataFrame()
 
-    def _fetch_symbol_data(self, sym):
-        """Fetch 15m, 1h, 4h untuk satu simbol sekaligus"""
+    def _fetch_symbol_data(self, sym, fetch_1h=True, fetch_4h=True):
+        """Fetch timeframe yang diperlukan saja"""
         df_15m = self.get_historical_data(sym, interval=config.TIMEFRAME, limit=100)
-        df_1h  = self.get_historical_data(sym, interval=config.MTF_INTERVAL, limit=60)
-        df_4h  = self.get_historical_data(sym, interval='4h', limit=20)
+        df_1h  = self.get_historical_data(sym, interval=config.MTF_INTERVAL, limit=60) if fetch_1h else pd.DataFrame()
+        df_4h  = self.get_historical_data(sym, interval='4h', limit=20) if fetch_4h else pd.DataFrame()
         return sym, df_15m, df_1h, df_4h
 
     # ──────────────────────────────────────────────────────
@@ -189,6 +219,7 @@ class BinanceBot:
                 'pnl':        round(profit_usdt_net, 2),
                 'time':       datetime.now().strftime('%d/%m %H:%M')
             })
+            notifier.notify_tp(symbol, pos['buy_price'], current_price, round(profit_usdt_net, 2), pos.get('strategy', '-'), 'TP')
             del self.virtual_portfolio[symbol]
             return
 
@@ -215,6 +246,7 @@ class BinanceBot:
                 'pnl':        round(-loss_usdt_net, 2),
                 'time':       datetime.now().strftime('%d/%m %H:%M')
             })
+            notifier.notify_sl(symbol, pos['buy_price'], current_price, round(-loss_usdt_net, 2), pos.get('strategy', '-'), 'SL')
             del self.virtual_portfolio[symbol]
             self.sl_cooldown[symbol] = self.loop_count
             return
@@ -245,6 +277,11 @@ class BinanceBot:
                 'pnl':        round(profit_usdt_net, 2),
                 'time':       datetime.now().strftime('%d/%m %H:%M')
             })
+            if profit_usdt_net > 0:
+                notifier.notify_tp(symbol, pos['buy_price'], current_price, round(profit_usdt_net, 2), pos.get('strategy', '-'), 'TIME_TP')
+            else:
+                notifier.notify_sl(symbol, pos['buy_price'], current_price, round(profit_usdt_net, 2), pos.get('strategy', '-'), 'TIME_SL')
+            
             del self.virtual_portfolio[symbol]
             if profit_usdt_net <= 0:
                 self.sl_cooldown[symbol] = self.loop_count
@@ -473,6 +510,7 @@ class BinanceBot:
     def run(self):
         dashboard.start_dashboard(5001)
         dashboard.add_log("🚀 Adaptive Multi-Regime Bot Aktif! (BEAR/BULL/RANGE Auto-Switch)")
+        notifier.notify_bot_start(self.virtual_balance, len(self.active_symbols))
 
         while True:
             # ── 0. Skip jam sepi low-liquidity (22:00–03:00 UTC = 05:00–10:00 WIB) ──
@@ -518,16 +556,22 @@ class BinanceBot:
                 self.active_symbols = new_symbols
                 self.last_symbol_refresh = datetime.now(timezone.utc)
                 
+            need_1h, need_4h = self._need_htf_refresh()
+
+            # Reset hanya jika perlu refresh
+            if need_1h:
+                self.market_state_1h = {}
+            if need_4h:
+                self.market_state_4h = {}
+                
             market_state = {}
-            market_state_1h = {}
-            market_state_4h = {}
             radar_list   = []
 
             print(f"\n🔄 Loop #{self.loop_count} — Memindai pasar...")
 
             # ── 1. Kumpulkan data semua koin ──
             with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(self._fetch_symbol_data, sym): sym for sym in self.active_symbols}
+                futures = {executor.submit(self._fetch_symbol_data, sym, need_1h, need_4h): sym for sym in self.active_symbols}
                 for future in as_completed(futures):
                     try:
                         sym, df_15m, df_1h, df_4h = future.result()
@@ -539,12 +583,12 @@ class BinanceBot:
                         df_15m = hitung_indikator(df_15m)
                         market_state[sym] = get_market_summary(df_15m)
                         
-                        if not df_1h.empty:
+                        if need_1h and not df_1h.empty:
                             df_1h = hitung_indikator(df_1h)
-                            market_state_1h[sym] = get_market_summary(df_1h)
-                        if not df_4h.empty:
+                            self.market_state_1h[sym] = get_market_summary(df_1h)
+                        if need_4h and not df_4h.empty:
                             df_4h = hitung_indikator(df_4h)
-                            market_state_4h[sym] = get_market_summary(df_4h)
+                            self.market_state_4h[sym] = get_market_summary(df_4h)
 
                         radar_list.append({
                             'symbol':    sym,
@@ -558,13 +602,26 @@ class BinanceBot:
 
                         print(f"   [{sym}] {market_state[sym]['price']:.4f} | RSI:{market_state[sym]['rsi']} | {market_state[sym]['trend_ema']} | ADX:{market_state[sym]['adx']}")
 
+            # Update timestamp refresh
+            if need_1h:
+                self.last_1h_refresh = datetime.now(timezone.utc)
+                print(f"   [HTF] Data 1h di-refresh untuk {len(self.market_state_1h)} koin")
+            if need_4h:
+                self.last_4h_refresh = datetime.now(timezone.utc)
+                print(f"   [HTF] Data 4h di-refresh untuk {len(self.market_state_4h)} koin")
+
             for sym in list(self.virtual_portfolio.keys()):
                 if sym in market_state:
                     self.check_virtual_portfolio(sym, market_state[sym]['price'])
 
             # ── 2. Deteksi Market Regime ──
-            regime = detect_market_regime(market_state)
+            regime = detect_market_regime(market_state, self.market_state_1h)
             regime_name = regime['regime']
+            
+            if regime_name != self.last_regime and self.last_regime is not None:
+                notifier.notify_regime_change(self.last_regime, regime_name, regime['description'])
+            self.last_regime = regime_name
+            
             print(f"\n{'='*60}")
             print(f"🌐 MARKET REGIME: {regime['description']}")
             print(f"   Uptrend: {regime['uptrend_pct']}% | Downtrend: {regime['downtrend_pct']}% | ADX avg: {regime['avg_adx']} | RSI avg: {regime['avg_rsi']}")
@@ -596,6 +653,7 @@ class BinanceBot:
                             'pnl':        round(profit_usdt_net, 2),
                             'time':       datetime.now().strftime('%d/%m %H:%M')
                         })
+                        notifier.notify_bear_exit(sym, pos['buy_price'], cur_price, round(profit_usdt_net, 2))
                         del self.virtual_portfolio[sym]
 
             # ── 3. Kalkulasi portofolio untuk dashboard ──
@@ -645,7 +703,7 @@ class BinanceBot:
             # ████ BULL MARKET — TREND FOLLOWING ████
             elif regime_name == 'BULL':
                 print(f"\n🐂 BULL MARKET — Mencari entry pullback ke EMA...")
-                koin_potensial = self._filter_bull_candidates(market_state, market_state_1h, market_state_4h)
+                koin_potensial = self._filter_bull_candidates(market_state, self.market_state_1h, self.market_state_4h)
 
                 if not koin_potensial:
                     print("⏳ Tidak ada koin dengan setup pullback valid.")
@@ -689,11 +747,15 @@ class BinanceBot:
                                     regime_name,
                                     'BULL-Pullback'
                                 )
+                                if sym in self.virtual_portfolio:
+                                    pos = self.virtual_portfolio[sym]
+                                    notifier.notify_buy(sym, live_price, pos['tp_price'], pos['sl_price'],
+                                                        'BULL-Pullback', confidence, regime_name)
 
             # ████ RANGE MARKET — MEAN REVERSION BOUNCE ████
             else:
                 print(f"\n📊 RANGING MARKET — Mencari entry bounce di BB bawah...")
-                koin_potensial = self._filter_range_candidates(market_state, market_state_1h, market_state_4h)
+                koin_potensial = self._filter_range_candidates(market_state, self.market_state_1h, self.market_state_4h)
 
                 if not koin_potensial:
                     print("⏳ Tidak ada koin oversold di dekat lower Bollinger Band.")
@@ -737,9 +799,19 @@ class BinanceBot:
                                     regime_name,
                                     'RANGE-Bounce'
                                 )
+                                if sym in self.virtual_portfolio:
+                                    pos = self.virtual_portfolio[sym]
+                                    notifier.notify_buy(sym, live_price, pos['tp_price'], pos['sl_price'],
+                                                        'RANGE-Bounce', confidence, regime_name)
 
             if len(self.trade_history) > 100:
                 self.trade_history = self.trade_history[:100]
+
+            if self.loop_count % 60 == 0 and self.trade_history:
+                stats = analytics.calculate_stats(self.trade_history, initial_balance=25.0)
+                analytics.print_report(stats)
+
+            save_state(self)
 
             time.sleep(config.LOOP_INTERVAL_SECONDS)
 

@@ -1,0 +1,7 @@
+python-binance
+pandas
+numpy
+python-dotenv
+groq
+flask
+requests

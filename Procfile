@@ -1,1 +1,1 @@
-web: python bot_binance.py
+web: cd bot_crypto_v2 && python main.py

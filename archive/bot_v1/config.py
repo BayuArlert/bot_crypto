@@ -61,9 +61,8 @@ TRADING_FEE_PCT       = 0.001  # 0.1% per sisi (standar tanpa BNB discount)
 # ============================================================
 
 # Regime RANGE (Sideways) — Mean Reversion Bounce
-# RR 2.8:1 → setelah fee 0.2%, net RR masih 2.5:1
-RANGE_TP_ATR_MULT = 2.2   # TP = harga_beli + 2.2 × ATR
-RANGE_SL_ATR_MULT = 0.8   # SL = harga_beli - 0.8 × ATR  → RR ≈ 2.75:1
+RANGE_TP_ATR_MULT = 2.5   # TP = harga_beli + 2.5 × ATR
+RANGE_SL_ATR_MULT = 1.2   # SL = harga_beli - 1.2 × ATR  → RR > 2:1
 
 # Regime BULL (Uptrend Kuat) — Trend Following
 # RR 2.5:1 → setelah fee, net profit lebih signifikan
@@ -95,3 +94,10 @@ BULL_UPTREND_THRESHOLD_PCT   = 55   # 55% koin harus uptrend
 # 6. BOT INTERVAL
 # ============================================================
 LOOP_INTERVAL_SECONDS = 60
+
+# ============================================================
+# 7. NOTIFIKASI TELEGRAM
+# ============================================================
+TELEGRAM_ENABLED   = True
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
